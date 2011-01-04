@@ -2,6 +2,8 @@ set enc=utf-8
 
 set syntax=python
 
+let python_highlight_all=1
+
 set tabstop=4
 
 " Do smart case matching
