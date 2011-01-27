@@ -9,11 +9,18 @@ if has("gui_gtk")
     "set guifont=Inconsolata\ 13
     set guifont=Consolas\ 13
     set guioptions-=T
-    set guioptions-=t    
+    set guioptions-=t
     let moria_style='dark'
     colors moria
     behave mswin
-else 
+elseif has("win32")
+    set guifont=Consolas:h12:cANSI
+    let &guioptions = substitute(&guioptions, "t", "", "g")
+    let &guioptions = substitute(&guioptions, "T", "", "g")
+    let moria_style='dark'
+    colors moria
+    behave mswin
+else
     if $TERM=="linux"
         colors peachpuff
     else
@@ -24,7 +31,11 @@ else
 endif
 
 " Set root path
-set rtp+=~/.vim
+if has("win32")
+    set rtp+=$VIMRUNTIME,../$VIMRUNTIME/vimfiles
+else
+    set rtp+=~/.vim
+endif
 
 " Disable Generation of Backup Files
 set nobackup
@@ -108,7 +119,7 @@ if has('title') && (has('gui_running') || &title)
     set titlestring+=\ -\ %{substitute(getcwd(),\ $HOME,\ '~',\ '')}        " working directory
 endif
 
-" Scroll when cursor gets within 3 characters of top/bottom edge 
+" Scroll when cursor gets within 3 characters of top/bottom edge
 set scrolloff=3
 
 " Remember things between sessions
@@ -120,7 +131,7 @@ set scrolloff=3
 " n    - set name of viminfo file
 set viminfo='20,\"50,:50
 
-" Remember up to 100 'colon' commmands and search patterns 
+" Remember up to 100 'colon' commmands and search patterns
 " set history=100
 
 " Supertab
@@ -190,10 +201,10 @@ vnoremap > >gv
 nmap <silent> <F9> :NERDTreeToggle<CR>
 
 nmap <F11> :set keymap=serbian-latin<CR>
-nmap <F10> :set keymap=<CR> 
+nmap <F10> :set keymap=<CR>
 
 " delete trailing whitespace (spaces, tabs) from end of each line
-nmap <silent> <F12> :%s/[ \t]*$//g<CR> 
+nmap <silent> <F12> :%s/[ \t]*$//g<CR>
 
 " use ctrl-space for omni and keyword completion
 inoremap <expr> <C-Space> pumvisible() \|\| &omnifunc == '' ?
