@@ -5,28 +5,27 @@ filetype indent on
 syntax on
 
 " Color scheme
+colors solarized
 if has("gui_gtk")
-    "set guifont=Inconsolata\ 13
     set guifont=Consolas\ 13
     set guioptions-=T
     set guioptions-=t
-    let moria_style='dark'
-    colors moria
     behave mswin
 elseif has("win32")
     set guifont=Consolas:h12:cANSI
     let &guioptions = substitute(&guioptions, "t", "", "g")
     let &guioptions = substitute(&guioptions, "T", "", "g")
-    let moria_style='dark'
-    colors moria
     behave mswin
 else
     if $TERM=="linux"
-        colors peachpuff
-    else
-        set t_Co=256
-        colors xoria256
 	    set background=dark
+        let g:solarized_termcolors=16
+        set t_Co=16
+    else
+	    set background=dark
+        let g:solarized_termtrans=0
+        let g:solarized_termcolors=256
+        set t_Co=256
     endif
 endif
 
