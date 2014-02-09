@@ -1,6 +1,6 @@
 set enc=utf-8
 
-set autoindent
+set noautoindent
 set smartindent
 
 set syntax=python
