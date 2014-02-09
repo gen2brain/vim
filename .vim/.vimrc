@@ -5,15 +5,7 @@ filetype indent on
 syntax on
 
 " Color scheme
-let g:molokai_original=1
-if has("gui_gtk")
-    set background=light
-    colors moria
-    set guifont=Consolas\ 13
-    set guioptions-=T
-    set guioptions-=t
-    behave mswin
-elseif has("gui")
+if has("gui")
     set background=light
     colors moria
     set guifont=Consolas\ 13
@@ -101,7 +93,6 @@ set ignorecase
 " Do not highlight search results
 set nohlsearch
 
-
 " Show line, column number, and relative position within a file in the status line
 set ruler
 
@@ -145,11 +136,6 @@ set viminfo='20,\"50,:50
 " Supertab
 let g:SuperTabDefaultCompletionType = "<C-N>"
 " let g:SuperTabContextDefaultCompletionType = "<C-N>"
-
-" FindMate
-let g:FindMate_firstSearch = 'find'
-let g:FindMate_verbose = 0
-let g:FindMate_totalResults = 10
 
 " NerdTree
 nmap <silent> <F9> :NERDTreeToggle<CR>
@@ -223,3 +209,6 @@ inoremap <expr> <C-Space> pumvisible() \|\| &omnifunc == '' ?
 imap <C-@> <C-Space>
 
 " }}}
+
+let g:AUTHOR = 'Milan Nikolic'
+let g:EMAIL = '<gen2brain@gmail.com>'
