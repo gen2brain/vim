@@ -42,7 +42,7 @@ set nobackup
 set noswapfile
 
 " Completion options
-set completeopt=menu,longest,preview
+set completeopt=menu,longest
 set wildmode=longest,list
 
 " Tags
@@ -124,10 +124,6 @@ set viminfo='20,\"50,:50
 " Remember up to 100 'colon' commmands and search patterns
 " set history=100
 
-" Supertab
-let g:SuperTabDefaultCompletionType = "<C-N>"
-" let g:SuperTabContextDefaultCompletionType = "<C-N>"
-
 " NerdTree
 nmap <silent> <F9> :NERDTreeToggle<CR>
 
@@ -190,14 +186,6 @@ nmap <F10> :set keymap=<CR>
 
 " delete trailing whitespace (spaces, tabs) from end of each line
 nmap <silent> <F12> :%s/[ \t]*$//g<CR>
-
-" use ctrl-space for omni and keyword completion
-inoremap <expr> <C-Space> pumvisible() \|\| &omnifunc == '' ?
-\ "\<lt>C-n>" :
-\ "\<lt>C-x>\<lt>C-o><c-r>=pumvisible() ?" .
-\ "\"\\<lt>c-n>\\<lt>c-p>\\<lt>c-n>\" :" .
-\ "\" \\<lt>bs>\\<lt>C-n>\"\<CR>"
-imap <C-@> <C-Space>
 
 let $GOROOT = '/usr/lib/go'
 let $GOPATH = $HOME.'/golang'
