@@ -199,4 +199,7 @@ inoremap <expr> <C-Space> pumvisible() \|\| &omnifunc == '' ?
 \ "\" \\<lt>bs>\\<lt>C-n>\"\<CR>"
 imap <C-@> <C-Space>
 
+let $GOROOT = '/usr/lib/go'
+let $GOPATH = $HOME.'/golang'
+
 " }}}
