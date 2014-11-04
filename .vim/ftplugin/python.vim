@@ -1,6 +1,6 @@
 set enc=utf-8
 
-set noautoindent
+set autoindent
 set smartindent
 
 set syntax=python
@@ -14,9 +14,6 @@ autocmd FileType python set omnifunc=pythoncomplete#Complete
 set keywordprg=pydoc
 
 set wildignore+=*.pyc
-
-set dictionary-=~/.vim/dict/python.dict dictionary+=~/.vim/dict/python.dict
-set complete-=k complete+=k
 
 " Map <F5> to re-build tags file
 nmap <silent> <F5>

@@ -7,14 +7,14 @@ syntax on
 " Color scheme
 if has("gui")
     set background=light
-    colors moria
+    colors darcula
     set guifont=Consolas\ 13
     set guioptions-=T
     set guioptions-=t
     behave mswin
 elseif has("win32")
     set background=light
-    colors moria
+    colors darcula
     set guifont=Consolas:h12:cANSI
     let &guioptions = substitute(&guioptions, "t", "", "g")
     let &guioptions = substitute(&guioptions, "T", "", "g")
@@ -109,15 +109,6 @@ set statusline+=%=                           " right align
 set statusline+=%2*0x%-8B\                   " current char
 set statusline+=%-14.(%l,%c%V%)\ %<%P        " offset
 
-" Nice window title
-if has('title') && (has('gui_running') || &title)
-    set titlestring=
-    set titlestring+=%f\                     " file name
-    set titlestring+=%h%m%r%w                " flags
-    set titlestring+=\ -\ %{v:progname}      " program name
-    set titlestring+=\ -\ %{substitute(getcwd(),\ $HOME,\ '~',\ '')}        " working directory
-endif
-
 " Scroll when cursor gets within 3 characters of top/bottom edge
 set scrolloff=3
 
@@ -209,6 +200,3 @@ inoremap <expr> <C-Space> pumvisible() \|\| &omnifunc == '' ?
 imap <C-@> <C-Space>
 
 " }}}
-
-let g:AUTHOR = 'Milan Nikolic'
-let g:EMAIL = '<gen2brain@gmail.com>'

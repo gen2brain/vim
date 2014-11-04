@@ -43,7 +43,3 @@ noremap <C-P> :w!<CR>:!php %<CR>
 
 " Change SQL case
 vmap <C-x><C-s> :call ChangeSqlCase()<cr>
-
-" Dictionary completion
-set dictionary-=~/.vim/dict/php.dict dictionary+=~/.vim/dict/php.dict
-set complete-=k complete+=k
