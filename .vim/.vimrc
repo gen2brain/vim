@@ -187,7 +187,7 @@ nmap <F10> :set keymap=<CR>
 " delete trailing whitespace (spaces, tabs) from end of each line
 nmap <silent> <F12> :%s/[ \t]*$//g<CR>
 
-let $GOROOT = '/usr/lib/go'
+let $GOROOT = $HOME.'/go'
 let $GOPATH = $HOME.'/golang'
 
 " }}}
