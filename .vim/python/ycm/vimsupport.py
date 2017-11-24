@@ -1,4 +1,5 @@
-# Copyright (C) 2011, 2012  Google Inc.
+# Copyright (C) 2011-2012 Google Inc.
+#               2016      YouCompleteMe contributors
 #
 # This file is part of YouCompleteMe.
 #
@@ -19,18 +20,17 @@ from __future__ import unicode_literals
 from __future__ import print_function
 from __future__ import division
 from __future__ import absolute_import
-from future import standard_library
-standard_library.install_aliases()
+# Not installing aliases from python-future; it's unreliable and slow.
 from builtins import *  # noqa
 
 from future.utils import iterkeys
 import vim
 import os
-import tempfile
 import json
 import re
 from collections import defaultdict
-from ycmd.utils import ToUnicode, ToBytes
+from ycmd.utils import ( ByteOffsetToCodepointOffset, GetCurrentDirectory,
+                         JoinLinesAsUnicode, ToBytes, ToUnicode )
 from ycmd import user_options_store
 
 BUFFER_COMMAND_MAP = { 'same-buffer'      : 'edit',
@@ -56,6 +56,12 @@ def CurrentLineAndColumn():
   return line, column
 
 
+def SetCurrentLineAndColumn( line, column ):
+  """Sets the cursor position to the 0-based line and 0-based column."""
+  # Line from vim.current.window.cursor is 1-based.
+  vim.current.window.cursor = ( line + 1, column )
+
+
 def CurrentColumn():
   """Returns the 0-based current column. Do NOT access the CurrentColumn in
   vim.current.line. It doesn't exist yet when the cursor is at the end of the
@@ -73,6 +79,17 @@ def CurrentLineContents():
   return ToUnicode( vim.current.line )
 
 
+def CurrentLineContentsAndCodepointColumn():
+  """Returns the line contents as a unicode string and the 0-based current
+  column as a codepoint offset. If the current column is outside the line,
+  returns the column position at the end of the line."""
+  line = CurrentLineContents()
+  byte_column = CurrentColumn()
+  # ByteOffsetToCodepointOffset expects 1-based offset.
+  column = ByteOffsetToCodepointOffset( line, byte_column + 1 ) - 1
+  return line, column
+
+
 def TextAfterCursor():
   """Returns the text after CurrentColumn."""
   return ToUnicode( vim.current.line[ CurrentColumn(): ] )
@@ -81,19 +98,6 @@ def TextAfterCursor():
 def TextBeforeCursor():
   """Returns the text before CurrentColumn."""
   return ToUnicode( vim.current.line[ :CurrentColumn() ] )
-
-
-# Expects version_string in 'MAJOR.MINOR.PATCH' format, e.g. '7.4.301'
-def VimVersionAtLeast( version_string ):
-  major, minor, patch = [ int( x ) for x in version_string.split( '.' ) ]
-
-  # For Vim 7.4.301, v:version is '704'
-  actual_major_and_minor = GetIntValue( 'v:version' )
-  matching_major_and_minor = major * 100 + minor
-  if actual_major_and_minor != matching_major_and_minor:
-    return actual_major_and_minor > matching_major_and_minor
-
-  return GetBoolValue( 'has("patch{0}")'.format( patch ) )
 
 
 # Note the difference between buffer OPTIONS and VARIABLES; the two are not
@@ -116,26 +120,29 @@ def BufferModified( buffer_object ):
   return bool( int( GetBufferOption( buffer_object, 'mod' ) ) )
 
 
-def GetUnsavedAndCurrentBufferData():
+def GetUnsavedAndSpecifiedBufferData( including_filepath ):
+  """Build part of the request containing the contents and filetypes of all
+  dirty buffers as well as the buffer with filepath |including_filepath|."""
   buffers_data = {}
   for buffer_object in vim.buffers:
+    buffer_filepath = GetBufferFilepath( buffer_object )
     if not ( BufferModified( buffer_object ) or
-             buffer_object == vim.current.buffer ):
+             buffer_filepath == including_filepath ):
       continue
 
-    buffers_data[ GetBufferFilepath( buffer_object ) ] = {
+    buffers_data[ buffer_filepath ] = {
       # Add a newline to match what gets saved to disk. See #1455 for details.
-      'contents': '\n'.join( ToUnicode( x ) for x in buffer_object ) + '\n',
+      'contents': JoinLinesAsUnicode( buffer_object ) + '\n',
       'filetypes': FiletypesForBuffer( buffer_object )
     }
 
   return buffers_data
 
 
-def GetBufferNumberForFilename( filename, open_file_if_needed = True ):
+def GetBufferNumberForFilename( filename, create_buffer_if_needed = False ):
   return GetIntValue( u"bufnr('{0}', {1})".format(
       EscapeForVim( os.path.realpath( filename ) ),
-      int( open_file_if_needed ) ) )
+      int( create_buffer_if_needed ) ) )
 
 
 def GetCurrentBufferFilepath():
@@ -151,15 +158,18 @@ def BufferIsVisible( buffer_number ):
 
 def GetBufferFilepath( buffer_object ):
   if buffer_object.name:
-    return buffer_object.name
+    return ToUnicode( buffer_object.name )
   # Buffers that have just been created by a command like :enew don't have any
-  # buffer name so we use the buffer number for that. Also, os.getcwd() throws
-  # an exception when the CWD has been deleted so we handle that.
-  try:
-    folder_path = os.getcwd()
-  except OSError:
-    folder_path = tempfile.gettempdir()
-  return os.path.join( folder_path, str( buffer_object.number ) )
+  # buffer name so we use the buffer number for that.
+  return os.path.join( GetCurrentDirectory(), str( buffer_object.number ) )
+
+
+def GetCurrentBufferNumber():
+  return vim.current.buffer.number
+
+
+def GetBufferChangedTick( bufnr ):
+  return GetIntValue( 'getbufvar({0}, "changedtick")'.format( bufnr ) )
 
 
 def UnplaceSignInBuffer( buffer_number, sign_id ):
@@ -177,28 +187,8 @@ def PlaceSign( sign_id, line_num, buffer_num, is_error = True ):
     line_num = 1
 
   sign_name = 'YcmError' if is_error else 'YcmWarning'
-  vim.command( 'sign place {0} line={1} name={2} buffer={3}'.format(
-    sign_id, line_num, sign_name, buffer_num ) )
-
-
-def PlaceDummySign( sign_id, buffer_num, line_num ):
-    if buffer_num < 0 or line_num < 0:
-      return
-    vim.command( 'sign define ycm_dummy_sign' )
-    vim.command(
-      'sign place {0} name=ycm_dummy_sign line={1} buffer={2}'.format(
-        sign_id,
-        line_num,
-        buffer_num,
-      )
-    )
-
-
-def UnPlaceDummySign( sign_id, buffer_num ):
-    if buffer_num < 0:
-      return
-    vim.command( 'sign undefine ycm_dummy_sign' )
-    vim.command( 'sign unplace {0} buffer={1}'.format( sign_id, buffer_num ) )
+  vim.command( 'sign place {0} name={1} line={2} buffer={3}'.format(
+    sign_id, sign_name, line_num, buffer_num ) )
 
 
 def ClearYcmSyntaxMatches():
@@ -254,24 +244,45 @@ def LineAndColumnNumbersClamped( line_num, column_num ):
 
 
 def SetLocationList( diagnostics ):
-  """Diagnostics should be in qflist format; see ":h setqflist" for details."""
+  """Populate the location list with diagnostics. Diagnostics should be in
+  qflist format; see ":h setqflist" for details."""
   vim.eval( 'setloclist( 0, {0} )'.format( json.dumps( diagnostics ) ) )
 
 
-def SetQuickFixList( quickfix_list, focus = False, autoclose = False ):
+def OpenLocationList( focus = False, autoclose = False ):
+  """Open the location list to the bottom of the current window with its
+  height automatically set to fit all entries. This behavior can be overridden
+  by using the YcmLocationOpened autocommand. When focus is set to True, the
+  location list window becomes the active window. When autoclose is set to True,
+  the location list window is automatically closed after an entry is
+  selected."""
+  vim.command( 'lopen' )
+
+  SetFittingHeightForCurrentWindow()
+
+  if autoclose:
+    # This autocommand is automatically removed when the location list window is
+    # closed.
+    vim.command( 'au WinLeave <buffer> q' )
+
+  if VariableExists( '#User#YcmLocationOpened' ):
+    vim.command( 'doautocmd User YcmLocationOpened' )
+
+  if not focus:
+    JumpToPreviousWindow()
+
+
+def SetQuickFixList( quickfix_list ):
   """Populate the quickfix list and open it. List should be in qflist format:
-  see ":h setqflist" for details. When focus is set to True, the quickfix
-  window becomes the active window. When autoclose is set to True, the quickfix
-  window is automatically closed after an entry is selected."""
+  see ":h setqflist" for details."""
   vim.eval( 'setqflist( {0} )'.format( json.dumps( quickfix_list ) ) )
-  OpenQuickFixList( focus, autoclose )
 
 
 def OpenQuickFixList( focus = False, autoclose = False ):
   """Open the quickfix list to full width at the bottom of the screen with its
   height automatically set to fit all entries. This behavior can be overridden
   by using the YcmQuickFixOpened autocommand.
-  See the SetQuickFixList function for the focus and autoclose options."""
+  See the OpenLocationList function for the focus and autoclose options."""
   vim.command( 'botright copen' )
 
   SetFittingHeightForCurrentWindow()
@@ -317,7 +328,8 @@ def ConvertDiagnosticsToQfList( diagnostics ):
       text += ' (FixIt available)'
 
     return {
-      'bufnr' : GetBufferNumberForFilename( location[ 'filepath' ] ),
+      'bufnr' : GetBufferNumberForFilename( location[ 'filepath' ],
+                                            create_buffer_if_needed = True ),
       'lnum'  : line_num,
       'col'   : location[ 'column_num' ],
       'text'  : text,
@@ -350,7 +362,9 @@ def VimExpressionToPythonType( vim_expression ):
 
 
 def HiddenEnabled( buffer_object ):
-  return bool( int( GetBufferOption( buffer_object, 'hid' ) ) )
+  if GetBufferOption( buffer_object, 'bh' ) == "hide":
+    return True
+  return GetBoolValue( '&hidden' )
 
 
 def BufferIsUsable( buffer_object ):
@@ -367,7 +381,7 @@ def TryJumpLocationInOpenedTab( filename, line, column ):
 
   for tab in vim.tabpages:
     for win in tab.windows:
-      if win.buffer.name == filepath:
+      if GetBufferFilepath( win.buffer ) == filepath:
         vim.current.tabpage = tab
         vim.current.window = win
         vim.current.window.cursor = ( line, column - 1 )
@@ -578,6 +592,11 @@ def CurrentFiletypes():
   return VimExpressionToPythonType( "&filetype" ).split( '.' )
 
 
+def GetBufferFiletypes( bufnr ):
+  command = 'getbufvar({0}, "&ft")'.format( bufnr )
+  return VimExpressionToPythonType( command ).split( '.' )
+
+
 def FiletypesForBuffer( buffer_object ):
   # NOTE: Getting &ft for other buffers only works when the buffer has been
   # visited by the user at least once, which is true for modified buffers
@@ -623,7 +642,7 @@ def _GetNumNonVisibleFiles( file_list ):
   are not curerntly open in visible windows"""
   return len(
       [ f for f in file_list
-        if not BufferIsVisible( GetBufferNumberForFilename( f, False ) ) ] )
+        if not BufferIsVisible( GetBufferNumberForFilename( f ) ) ] )
 
 
 def _OpenFileInSplitIfNeeded( filepath ):
@@ -640,7 +659,7 @@ def _OpenFileInSplitIfNeeded( filepath ):
   not to open a file, or if opening fails, this method raises RuntimeError,
   otherwise, guarantees to return a visible buffer number in buffer_num."""
 
-  buffer_num = GetBufferNumberForFilename( filepath, False )
+  buffer_num = GetBufferNumberForFilename( filepath )
 
   # We only apply changes in the current tab page (i.e. "visible" windows).
   # Applying changes in tabs does not lead to a better user experience, as the
@@ -663,7 +682,7 @@ def _OpenFileInSplitIfNeeded( filepath ):
   # OpenFilename returns us to the original cursor location. This is what we
   # want, because we don't want to disorientate the user, but we do need to
   # know the (now open) buffer number for the filename
-  buffer_num = GetBufferNumberForFilename( filepath, False )
+  buffer_num = GetBufferNumberForFilename( filepath )
   if not BufferIsVisible( buffer_num ):
     # This happens, for example, if there is a swap file and the user
     # selects the "Quit" or "Abort" options. We just raise an exception to
@@ -736,6 +755,7 @@ def ReplaceChunks( chunks ):
   # Open the quickfix list, populated with entries for each location we changed.
   if locations:
     SetQuickFixList( locations )
+    OpenQuickFixList()
 
   PostVimMessage( 'Applied {0} changes'.format( len( chunks ) ),
                   warning = False )
@@ -847,21 +867,26 @@ def InsertNamespace( namespace ):
       return
 
   pattern = '^\s*using\(\s\+[a-zA-Z0-9]\+\s\+=\)\?\s\+[a-zA-Z0-9.]\+\s*;\s*'
+  existing_indent = ''
   line = SearchInCurrentBuffer( pattern )
-  existing_line = LineTextInCurrentBuffer( line )
-  existing_indent = re.sub( r"\S.*", "", existing_line )
+  if line:
+    existing_line = LineTextInCurrentBuffer( line )
+    existing_indent = re.sub( r"\S.*", "", existing_line )
   new_line = "{0}using {1};\n\n".format( existing_indent, namespace )
   replace_pos = { 'line_num': line + 1, 'column_num': 1 }
-  ReplaceChunk( replace_pos, replace_pos, new_line, 0, 0 )
+  ReplaceChunk( replace_pos, replace_pos, new_line, 0, 0, vim.current.buffer )
   PostVimMessage( 'Add namespace: {0}'.format( namespace ), warning = False )
 
 
 def SearchInCurrentBuffer( pattern ):
+  """ Returns the 1-indexed line on which the pattern matches
+  (going UP from the current position) or 0 if not found """
   return GetIntValue( "search('{0}', 'Wcnb')".format( EscapeForVim( pattern )))
 
 
-def LineTextInCurrentBuffer( line ):
-  return vim.current.buffer[ line ]
+def LineTextInCurrentBuffer( line_number ):
+  """ Returns the text on the 1-indexed line (NOT 0-indexed) """
+  return vim.current.buffer[ line_number - 1 ]
 
 
 def ClosePreviewWindow():
@@ -915,6 +940,8 @@ def WriteToPreviewWindow( message ):
     vim.current.buffer[:] = message.splitlines()
 
     vim.current.buffer.options[ 'buftype' ]    = 'nofile'
+    vim.current.buffer.options[ 'bufhidden' ]  = 'wipe'
+    vim.current.buffer.options[ 'buflisted' ]  = False
     vim.current.buffer.options[ 'swapfile' ]   = False
     vim.current.buffer.options[ 'modifiable' ] = False
     vim.current.buffer.options[ 'readonly' ]   = True
@@ -931,32 +958,18 @@ def WriteToPreviewWindow( message ):
     PostVimMessage( message, warning = False )
 
 
-def CheckFilename( filename ):
-  """Check if filename is openable."""
-  try:
-    # We don't want to check for encoding issues when trying to open the file
-    # so we open it in binary mode.
-    open( filename, mode = 'rb' ).close()
-  except TypeError:
-    raise RuntimeError( "'{0}' is not a valid filename".format( filename ) )
-  except IOError as error:
-    raise RuntimeError(
-      "filename '{0}' cannot be opened. {1}.".format( filename,
-                                                      error.strerror ) )
-
-
 def BufferIsVisibleForFilename( filename ):
   """Check if a buffer exists for a specific file."""
-  buffer_number = GetBufferNumberForFilename( filename, False )
+  buffer_number = GetBufferNumberForFilename( filename )
   return BufferIsVisible( buffer_number )
 
 
 def CloseBuffersForFilename( filename ):
   """Close all buffers for a specific file."""
-  buffer_number = GetBufferNumberForFilename( filename, False )
+  buffer_number = GetBufferNumberForFilename( filename )
   while buffer_number != -1:
     vim.command( 'silent! bwipeout! {0}'.format( buffer_number ) )
-    new_buffer_number = GetBufferNumberForFilename( filename, False )
+    new_buffer_number = GetBufferNumberForFilename( filename )
     if buffer_number == new_buffer_number:
       raise RuntimeError( "Buffer {0} for filename '{1}' should already be "
                           "wiped out.".format( buffer_number, filename ) )
@@ -992,8 +1005,7 @@ def OpenFilename( filename, options = {} ):
   else:
     previous_tab = None
 
-  # Open the file
-  CheckFilename( filename )
+  # Open the file.
   try:
     vim.command( '{0}{1} {2}'.format( size, command, filename ) )
   # When the file we are trying to jump to has a swap file,
@@ -1043,4 +1055,4 @@ def _SetUpLoadedBuffer( command, filename, fix, position, watch ):
                  .format( filename ) )
 
   if position == 'end':
-    vim.command( 'silent! normal G zz' )
+    vim.command( 'silent! normal! Gzz' )

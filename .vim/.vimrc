@@ -6,15 +6,15 @@ syntax on
 
 " Color scheme
 if has("gui")
-    set background=light
-    colors darcula
+    colors one
+    set background=dark
     set guifont=Consolas\ 13
     set guioptions-=T
     set guioptions-=t
     behave mswin
 elseif has("win32")
-    set background=light
-    colors darcula
+    colors one
+    set background=dark
     set guifont=Consolas:h12:cANSI
     let &guioptions = substitute(&guioptions, "t", "", "g")
     let &guioptions = substitute(&guioptions, "T", "", "g")
@@ -22,12 +22,16 @@ elseif has("win32")
 else
     if $TERM=="linux"
         colors pablo
-        set t_Co=16
+        "set t_Co=16
     else
-        set background=light
-        colors xoria256
-        set t_Co=256
+        colors one
+        set background=dark
+        "set t_Co=256
     endif
+endif
+
+if has("termguicolors")
+    set termguicolors
 endif
 
 " Set root path
@@ -44,11 +48,6 @@ set noswapfile
 " Completion options
 set completeopt=menu,longest
 set wildmode=longest,list
-
-" Tags
-set tags+=$HOME/.vim/tags;
-set tags+='./.tags,.tags' " add .tags files
-set tags+='./../tags,../tags,./../.tags,../.tags' " look in the level above
 
 " character encoding
 set enc=utf-8
@@ -189,5 +188,9 @@ nmap <silent> <F12> :%s/[ \t]*$//g<CR>
 
 let $GOROOT = $HOME.'/go'
 let $GOPATH = $HOME.'/golang'
+
+let g:ycm_server_python_interpreter='/usr/bin/python'
+let g:go_def_mapping_enabled=0
+let g:NERDTreeMapActivateNode='<cr>'
 
 " }}}

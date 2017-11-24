@@ -20,8 +20,7 @@ from __future__ import unicode_literals
 from __future__ import print_function
 from __future__ import division
 from __future__ import absolute_import
-from future import standard_library
-standard_library.install_aliases()
+# Not installing aliases from python-future; it's unreliable and slow.
 from builtins import *  # noqa
 
 import os
@@ -33,7 +32,7 @@ from ycmd.completers.completer_utils import ( AtIncludeStatementStart,
                                               GetIncludeStatementValue )
 from ycmd.completers.cpp.clang_completer import InCFamilyFile
 from ycmd.completers.cpp.flags import Flags
-from ycmd.utils import ToUnicode, OnWindows
+from ycmd.utils import GetCurrentDirectory, OnWindows, ToUnicode
 from ycmd import responses
 
 EXTRA_INFO_MAP = { 1 : '[File]', 2 : '[Dir]', 3 : '[File&Dir]' }
@@ -162,7 +161,7 @@ class FilenameCompleter( Completer ):
       paths.extend( os.path.join( include_path, path_dir, relative_path ) for
                     relative_path in relative_paths  )
 
-    return sorted( set( paths ) )
+    return paths
 
 
 def _GetAbsolutePathForCompletions( path_dir,
@@ -184,7 +183,7 @@ def _GetAbsolutePathForCompletions( path_dir,
     if working_dir:
       return os.path.join( working_dir, path_dir )
     else:
-      return os.path.join( os.getcwd(), path_dir )
+      return os.path.join( GetCurrentDirectory(), path_dir )
   else:
     # Return paths relative to the file
     return os.path.join( os.path.join( os.path.dirname( filepath ) ),

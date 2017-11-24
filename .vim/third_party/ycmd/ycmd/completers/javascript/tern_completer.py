@@ -1,4 +1,4 @@
-# Copyright (C) 2015 ycmd contributors
+# Copyright (C) 2015-2017 ycmd contributors
 #
 # This file is part of ycmd.
 #
@@ -19,16 +19,14 @@ from __future__ import unicode_literals
 from __future__ import print_function
 from __future__ import division
 from __future__ import absolute_import
+# Not installing aliases from python-future; it's unreliable and slow.
 from builtins import *  # noqa
-from future.utils import iterkeys
-from future import standard_library
-standard_library.install_aliases()
 
+from future.utils import iterkeys
 import logging
 import os
 import requests
 import threading
-import traceback
 
 from subprocess import PIPE
 from ycmd import utils, responses
@@ -50,13 +48,16 @@ PATH_TO_TERN_BINARY = os.path.abspath(
     'bin',
     'tern' ) )
 
-PATH_TO_NODE = utils.PathToFirstExistingExecutable( [ 'node' ] )
+# On Debian-based distributions, node is by default installed as nodejs.
+PATH_TO_NODE = utils.PathToFirstExistingExecutable( [ 'nodejs', 'node' ] )
 
 # host name/address on which the tern server should listen
 # note: we use 127.0.0.1 rather than localhost because on some platforms
 # localhost might not be correctly configured as an alias for the loopback
 # address. (ahem: Windows)
 SERVER_HOST = '127.0.0.1'
+
+LOGFILE_FORMAT = 'tern_{port}_{std}_'
 
 
 def ShouldEnableTernCompleter():
@@ -89,10 +90,14 @@ def GlobalConfigExists( tern_config ):
 
 
 def FindTernProjectFile( starting_directory ):
+  """Finds the path to either a Tern project file or the user's global Tern
+  configuration file. If found, a tuple is returned containing the path and a
+  boolean indicating if the path is to a .tern-project file. If not found,
+  returns (None, False)."""
   for folder in utils.PathsToAllParentFolders( starting_directory ):
     tern_project = os.path.join( folder, '.tern-project' )
     if os.path.exists( tern_project ):
-      return tern_project
+      return ( tern_project, True )
 
   # As described here: http://ternjs.net/doc/manual.html#server a global
   # .tern-config file is also supported for the Tern server. This can provide
@@ -102,9 +107,9 @@ def FindTernProjectFile( starting_directory ):
   # to be anything other than annoying.
   tern_config = os.path.expanduser( '~/.tern-config' )
   if GlobalConfigExists( tern_config ):
-    return tern_config
+    return ( tern_config, False )
 
-  return None
+  return ( None, False )
 
 
 class TernCompleter( Completer ):
@@ -122,11 +127,18 @@ class TernCompleter( Completer ):
 
     self._do_tern_project_check = False
 
-    with self._server_state_mutex:
-      self._server_stdout = None
-      self._server_stderr = None
-      self._Reset()
-      self._StartServer()
+    # Used to determine the absolute path of files returned by the tern server.
+    # When a .tern_project file exists, paths are returned relative to it.
+    # Otherwise, they are returned relative to the working directory of the tern
+    # server.
+    self._server_paths_relative_to = None
+
+    self._server_handle = None
+    self._server_port = None
+    self._server_stdout = None
+    self._server_stderr = None
+
+    self._StartServer()
 
 
   def _WarnIfMissingTernProject( self ):
@@ -144,17 +156,28 @@ class TernCompleter( Completer ):
     if self._ServerIsRunning() and self._do_tern_project_check:
       self._do_tern_project_check = False
 
-      tern_project = FindTernProjectFile( os.getcwd() )
+      current_dir = utils.GetCurrentDirectory()
+      ( tern_project, is_project ) = FindTernProjectFile( current_dir )
       if not tern_project:
-        _logger.warning( 'No .tern-project file detected: ' + os.getcwd() )
+        _logger.warning( 'No .tern-project file detected: ' + current_dir )
         raise RuntimeError( 'Warning: Unable to detect a .tern-project file '
-                            'in the hierarchy before ' + os.getcwd() +
+                            'in the hierarchy before ' + current_dir +
                             ' and no global .tern-config file was found. '
                             'This is required for accurate JavaScript '
                             'completion. Please see the User Guide for '
                             'details.' )
       else:
-        _logger.info( 'Detected .tern-project file at: ' + tern_project )
+        _logger.info( 'Detected Tern configuration file at: ' + tern_project )
+
+        # Paths are relative to the project file if it exists, otherwise they
+        # are relative to the working directory of Tern server (which is the
+        # same as the working directory of ycmd).
+        self._server_paths_relative_to = (
+          os.path.dirname( tern_project ) if is_project else current_dir )
+
+        _logger.info( 'Tern paths are relative to: '
+                      + self._server_paths_relative_to )
+
 
 
   def _GetServerAddress( self ):
@@ -175,9 +198,34 @@ class TernCompleter( Completer ):
       'omitObjectPrototype': False
     }
 
-    completions = self._GetResponse( query,
-                                     request_data[ 'start_codepoint' ],
-                                     request_data ).get( 'completions', [] )
+    response = self._GetResponse( query,
+                                  request_data[ 'start_codepoint' ],
+                                  request_data )
+
+    completions = response.get( 'completions', [] )
+    tern_start_codepoint = response[ 'start' ][ 'ch' ]
+
+    # Tern returns the range of the word in the file which it is replacing. This
+    # may not be the same range that our "completion start column" calculation
+    # decided (i.e. it might not strictly be an identifier according to our
+    # rules). For example, when completing:
+    #
+    # require( '|
+    #
+    # with the cursor on |, tern returns something like 'test' (i.e. including
+    # the single-quotes). Single-quotes are not a JavaScript identifier, so
+    # should not normally be considered an identifier character, but by using
+    # our own start_codepoint calculation, the inserted string would be:
+    #
+    # require( ''test'
+    #
+    # which is clearly incorrect. It should be:
+    #
+    # require( 'test'
+    #
+    # So, we use the start position that tern tells us to use.
+    # We add 1 because tern offsets are 0-based and ycmd offsets are 1-based
+    request_data[ 'start_codepoint' ] = tern_start_codepoint + 1
 
     def BuildDoc( completion ):
       doc = completion.get( 'type', 'Unknown type' )
@@ -233,32 +281,16 @@ class TernCompleter( Completer ):
 
   def DebugInfo( self, request_data ):
     with self._server_state_mutex:
-      if self._ServerIsRunning():
-        return ( 'JavaScript completer debug information:\n'
-                 '  Tern running at: {0}\n'
-                 '  Tern process ID: {1}\n'
-                 '  Tern executable: {2}\n'
-                 '  Tern logfiles:\n'
-                 '    {3}\n'
-                 '    {4}'.format( self._GetServerAddress(),
-                                   self._server_handle.pid,
-                                   PATH_TO_TERN_BINARY,
-                                   self._server_stdout,
-                                   self._server_stderr ) )
+      tern_server = responses.DebugInfoServer(
+        name = 'Tern',
+        handle = self._server_handle,
+        executable = PATH_TO_TERN_BINARY,
+        address = SERVER_HOST,
+        port = self._server_port,
+        logfiles = [ self._server_stdout, self._server_stderr ] )
 
-      if self._server_stdout and self._server_stderr:
-        return ( 'JavaScript completer debug information:\n'
-                 '  Tern no longer running\n'
-                 '  Tern executable: {0}\n'
-                 '  Tern logfiles:\n'
-                 '    {1}\n'
-                 '    {2}\n'.format( PATH_TO_TERN_BINARY,
-                                     self._server_stdout,
-                                     self._server_stderr ) )
-
-      return ( 'JavaScript completer debug information:\n'
-               '  Tern is not running\n'
-               '  Tern executable: {0}'.format( PATH_TO_TERN_BINARY ) )
+      return responses.BuildDebugInfoResponse( name = 'JavaScript',
+                                               servers = [ tern_server ] )
 
 
   def Shutdown( self ):
@@ -276,20 +308,6 @@ class TernCompleter( Completer ):
       return response.status_code == requests.codes.ok
     except requests.ConnectionError:
       return False
-
-
-  def _Reset( self ):
-    with self._server_state_mutex:
-      if not self._server_keep_logfiles:
-        if self._server_stdout:
-          utils.RemoveIfExists( self._server_stdout )
-          self._server_stdout = None
-        if self._server_stderr:
-          utils.RemoveIfExists( self._server_stderr )
-          self._server_stderr = None
-
-      self._server_handle = None
-      self._server_port   = 0
 
 
   def _PostRequest( self, request, request_data ):
@@ -360,6 +378,18 @@ class TernCompleter( Completer ):
     return self._PostRequest( { 'query': full_query }, request_data )
 
 
+  def _ServerPathToAbsolute( self, path ):
+    """Given a path returned from the tern server, return it as an absolute
+    path.
+
+    In particular, if the path is a relative path, return an absolute path
+    assuming that it is relative to the location of the .tern-project file."""
+    if os.path.isabs( path ):
+      return path
+
+    return os.path.join( self._server_paths_relative_to, path )
+
+
   # TODO: this function is way too long. Consider refactoring it.
   def _StartServer( self ):
     with self._server_state_mutex:
@@ -388,16 +418,11 @@ class TernCompleter( Completer ):
                     + ' '.join( command ) )
 
       try:
-        logfile_format = os.path.join( utils.PathToCreatedTempDir(),
-                                      u'tern_{port}_{std}.log' )
+        self._server_stdout = utils.CreateLogfile(
+            LOGFILE_FORMAT.format( port = self._server_port, std = 'stdout' ) )
 
-        self._server_stdout = logfile_format.format(
-            port = self._server_port,
-            std = 'stdout' )
-
-        self._server_stderr = logfile_format.format(
-            port = self._server_port,
-            std = 'stderr' )
+        self._server_stderr = utils.CreateLogfile(
+            LOGFILE_FORMAT.format( port = self._server_port, std = 'stderr' ) )
 
         # We need to open a pipe to stdin or the Tern server is killed.
         # See https://github.com/ternjs/tern/issues/740#issuecomment-203979749
@@ -410,11 +435,10 @@ class TernCompleter( Completer ):
                                                   stdout = stdout,
                                                   stderr = stderr )
       except Exception:
-        _logger.warning( 'Unable to start Tern server: '
-                        + traceback.format_exc() )
-        self._Reset()
+        _logger.exception( 'Unable to start Tern server' )
+        self._CleanUp()
 
-      if self._server_port > 0 and self._ServerIsRunning():
+      if self._server_port and self._ServerIsRunning():
         _logger.info( 'Tern Server started with pid: ' +
                       str( self._server_handle.pid ) +
                       ' listening on port ' +
@@ -448,7 +472,18 @@ class TernCompleter( Completer ):
         except RuntimeError:
           _logger.exception( 'Error while stopping Tern server' )
 
-      self._Reset()
+      self._CleanUp()
+
+
+  def _CleanUp( self ):
+    utils.CloseStandardStreams( self._server_handle )
+    self._server_handle = None
+    self._server_port = None
+    if not self._server_keep_logfiles:
+      utils.RemoveIfExists( self._server_stdout )
+      self._server_stdout = None
+      utils.RemoveIfExists( self._server_stderr )
+      self._server_stderr = None
 
 
   def _ServerIsRunning( self ):
@@ -499,12 +534,13 @@ class TernCompleter( Completer ):
                                   request_data[ 'column_codepoint' ],
                                   request_data )
 
+    filepath = self._ServerPathToAbsolute( response[ 'file' ] )
     return responses.BuildGoToResponseFromLocation(
-      _BuildLocation( utils.SplitLines( GetFileContents( request_data,
-                                                         response[ 'file' ] ) ),
-                      response[ 'file' ],
-                      response[ 'start' ][ 'line' ],
-                      response[ 'start' ][ 'ch' ] ) )
+      _BuildLocation(
+        utils.SplitLines( GetFileContents( request_data, filepath ) ),
+        filepath,
+        response[ 'start' ][ 'line' ],
+        response[ 'start' ][ 'ch' ] ) )
 
 
   def _GoToReferences( self, request_data ):
@@ -516,15 +552,16 @@ class TernCompleter( Completer ):
                                   request_data[ 'column_codepoint' ],
                                   request_data )
 
-    return [
-      responses.BuildGoToResponseFromLocation(
-        _BuildLocation( utils.SplitLines( GetFileContents( request_data,
-                                                           ref[ 'file' ] ) ),
-                        ref[ 'file' ],
-                        ref[ 'start' ][ 'line' ],
-                        ref[ 'start' ][ 'ch' ] ) )
-      for ref in response[ 'refs' ]
-    ]
+    def BuildRefResponse( ref ):
+      filepath = self._ServerPathToAbsolute( ref[ 'file' ] )
+      return responses.BuildGoToResponseFromLocation(
+        _BuildLocation(
+          utils.SplitLines( GetFileContents( request_data, filepath ) ),
+          filepath,
+          ref[ 'start' ][ 'line' ],
+          ref[ 'start' ][ 'ch' ] ) )
+
+    return [ BuildRefResponse( ref ) for ref in response[ 'refs' ] ]
 
 
   def _Rename( self, request_data, args ):
@@ -544,7 +581,7 @@ class TernCompleter( Completer ):
     # Tern response format:
     # 'changes': [
     #     {
-    #         'file'
+    #         'file' (potentially relative path)
     #         'start' {
     #             'line'
     #             'ch' (codepoint offset)
@@ -568,12 +605,12 @@ class TernCompleter( Completer ):
     #                      'start_' (Location): {
     #                          'line_number_',
     #                          'column_number_', (byte offset)
-    #                          'filename_'
+    #                          'filename_' (note: absolute path!)
     #                      },
     #                      'end_' (Location): {
     #                          'line_number_',
     #                          'column_number_', (byte offset)
-    #                          'filename_'
+    #                          'filename_' (note: absolute path!)
     #                      }
     #                  }
     #              }
@@ -581,7 +618,7 @@ class TernCompleter( Completer ):
     #         'location' (Location) {
     #              'line_number_',
     #              'column_number_',
-    #              'filename_'
+    #              'filename_' (note: absolute path!)
     #         }
     #
     #     ]
@@ -601,13 +638,13 @@ class TernCompleter( Completer ):
 
 
     def BuildFixItChunk( change ):
-      filename = os.path.abspath( change[ 'file' ] )
-      file_contents = utils.SplitLines( GetFileContents( request_data,
-                                                         filename ) )
+      filepath = self._ServerPathToAbsolute( change[ 'file' ] )
+      file_contents = utils.SplitLines(
+        GetFileContents( request_data, filepath ) )
       return responses.FixItChunk(
         change[ 'text' ],
         BuildRange( file_contents,
-                    filename,
+                    filepath,
                     change[ 'start' ],
                     change[ 'end' ] ) )
 

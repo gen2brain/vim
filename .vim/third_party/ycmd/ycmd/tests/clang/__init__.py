@@ -19,14 +19,18 @@ from __future__ import unicode_literals
 from __future__ import print_function
 from __future__ import division
 from __future__ import absolute_import
-from future import standard_library
-standard_library.install_aliases()
+# Not installing aliases from python-future; it's unreliable and slow.
 from builtins import *  # noqa
 
 import functools
 import os
+import tempfile
+import contextlib
+import json
+import shutil
 
 from ycmd import handlers
+from ycmd.utils import ToUnicode
 from ycmd.tests.test_utils import ClearCompletionsCache, SetUpApp
 
 shared_app = None
@@ -61,20 +65,78 @@ def SharedYcmd( test ):
   return Wrapper
 
 
-def IsolatedYcmd( test ):
+def IsolatedYcmd( custom_options = {} ):
   """Defines a decorator to be attached to tests of this package. This decorator
   passes a unique ycmd application as a parameter. It should be used on tests
   that change the server state in a irreversible way (ex: a semantic subserver
   is stopped or restarted) or expect a clean state (ex: no semantic subserver
-  started, no .ycm_extra_conf.py loaded, etc).
+  started, no .ycm_extra_conf.py loaded, etc). Use the optional parameter
+  |custom_options| to give additional options and/or override the default ones.
 
-  Do NOT attach it to test generators but directly to the yielded tests."""
-  @functools.wraps( test )
-  def Wrapper( *args, **kwargs ):
-    old_server_state = handlers._server_state
+  Do NOT attach it to test generators but directly to the yielded tests.
 
-    try:
-      test( SetUpApp(), *args, **kwargs )
-    finally:
-      handlers._server_state = old_server_state
-  return Wrapper
+  Example usage:
+
+    from ycmd.tests.python import IsolatedYcmd
+
+    @IsolatedYcmd( { 'auto_trigger': 0 } )
+    def CustomAutoTrigger_test( app ):
+      ...
+  """
+  def Decorator( test ):
+    @functools.wraps( test )
+    def Wrapper( *args, **kwargs ):
+      old_server_state = handlers._server_state
+      try:
+        test( SetUpApp( custom_options ), *args, **kwargs )
+      finally:
+        handlers._server_state = old_server_state
+    return Wrapper
+  return Decorator
+
+
+@contextlib.contextmanager
+def TemporaryClangTestDir():
+  """Context manager to execute a test with a temporary workspace area. The
+  workspace is deleted upon completion of the test. This is useful particularly
+  for testing compilation databases, as they require actual absolute paths.
+  See also |TemporaryClangProject|. The context manager yields the path of the
+  temporary directory."""
+  tmp_dir = tempfile.mkdtemp()
+  try:
+    yield tmp_dir
+  finally:
+    shutil.rmtree( tmp_dir )
+
+
+@contextlib.contextmanager
+def TemporaryClangProject( tmp_dir, compile_commands ):
+  """Context manager to create a compilation database in a directory and delete
+  it when the test completes. |tmp_dir| is the directory in which to create the
+  database file (typically used in conjunction with |TemporaryClangTestDir|) and
+  |compile_commands| is a python object representing the compilation database.
+
+  e.g.:
+    with TemporaryClangTestDir() as tmp_dir:
+      database = [
+        {
+          'directory': os.path.join( tmp_dir, dir ),
+          'command': compiler_invocation,
+          'file': os.path.join( tmp_dir, dir, filename )
+        },
+        ...
+      ]
+      with TemporaryClangProject( tmp_dir, database ):
+        <test here>
+
+  The context manager does not yield anything.
+  """
+  path = os.path.join( tmp_dir, 'compile_commands.json' )
+
+  with open( path, 'w' ) as f:
+    f.write( ToUnicode( json.dumps( compile_commands, indent=2 ) ) )
+
+  try:
+    yield
+  finally:
+    os.remove( path )

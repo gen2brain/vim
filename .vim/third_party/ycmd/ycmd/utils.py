@@ -21,31 +21,32 @@ from __future__ import unicode_literals
 from __future__ import print_function
 from __future__ import division
 from __future__ import absolute_import
-from future import standard_library
-standard_library.install_aliases()
+# Not installing aliases from python-future; it's unreliable and slow.
 from builtins import *  # noqa
-from future.utils import PY2, native
 
+from future.utils import PY2, native
 import os
 import socket
-import stat
 import subprocess
 import sys
 import tempfile
 import time
 
 
+# Idiom to import urljoin and urlparse on Python 2 and 3. By exposing these
+# functions here, we can import them directly from this module:
+#
+#   from ycmd.utils import urljoin, urlparse
+#
+if PY2:
+  from urlparse import urljoin, urlparse
+else:
+  from urllib.parse import urljoin, urlparse  # noqa
+
+
 # Creation flag to disable creating a console window on Windows. See
 # https://msdn.microsoft.com/en-us/library/windows/desktop/ms684863.aspx
 CREATE_NO_WINDOW = 0x08000000
-
-# Don't use this! Call PathToCreatedTempDir() instead. This exists for the sake
-# of tests.
-RAW_PATH_TO_TEMP_DIR = os.path.join( tempfile.gettempdir(), 'ycm_temp' )
-
-# Readable, writable and executable by everyone.
-ACCESSIBLE_TO_ALL_MASK = ( stat.S_IROTH | stat.S_IWOTH | stat.S_IXOTH |
-                           stat.S_IRGRP | stat.S_IWGRP | stat.S_IXGRP )
 
 EXECUTABLE_FILE_MASK = os.F_OK | os.X_OK
 
@@ -73,6 +74,13 @@ def OpenForStdHandle( filepath ):
   return open( filepath, mode = 'w', buffering = 1 )
 
 
+def CreateLogfile( prefix = '' ):
+  with tempfile.NamedTemporaryFile( prefix = prefix,
+                                    suffix = '.log',
+                                    delete = False ) as logfile:
+    return logfile.name
+
+
 # Given an object, returns a str object that's utf-8 encoded. This is meant to
 # be used exclusively when producing strings to be passed to the C++ Python
 # plugins. For other code, you likely want to use ToBytes below.
@@ -95,6 +103,22 @@ def ToUnicode( value ):
     # All incoming text should be utf8
     return str( value, 'utf8' )
   return str( value )
+
+
+# When lines is an iterable of all strings or all bytes, equivalent to
+#   '\n'.join( ToUnicode( lines ) )
+# but faster on large inputs.
+def JoinLinesAsUnicode( lines ):
+  try:
+    first = next( iter( lines ) )
+  except StopIteration:
+    return str()
+
+  if isinstance( first, str ):
+    return ToUnicode( '\n'.join( lines ) )
+  if isinstance( first, bytes ):
+    return ToUnicode( b'\n'.join( lines ) )
+  raise ValueError( 'lines must contain either strings or bytes.' )
 
 
 # Consistently returns the new bytes() type from python-future. Assumes incoming
@@ -164,24 +188,6 @@ def CodepointOffsetToByteOffset( unicode_line_value, codepoint_offset ):
   # Should be a no-op, but in case someone passes a bytes instance.
   unicode_line_value = ToUnicode( unicode_line_value )
   return len( ToBytes( unicode_line_value[ : codepoint_offset - 1 ] ) ) + 1
-
-
-def PathToCreatedTempDir( tempdir = RAW_PATH_TO_TEMP_DIR ):
-  try:
-    os.makedirs( tempdir )
-    # Needed to support multiple users working on the same machine;
-    # see issue 606.
-    MakeFolderAccessibleToAll( tempdir )
-  except OSError:
-    # Folder already exists, skip folder creation.
-    pass
-  return tempdir
-
-
-def MakeFolderAccessibleToAll( path_to_folder ):
-  current_stat = os.stat( path_to_folder )
-  flags = current_stat.st_mode | ACCESSIBLE_TO_ALL_MASK
-  os.chmod( path_to_folder, flags )
 
 
 def GetUnusedLocalhostPort():
@@ -292,6 +298,14 @@ def WaitUntilProcessIsTerminated( handle, timeout = 5 ):
     time.sleep( 0.1 )
 
 
+def CloseStandardStreams( handle ):
+  if not handle:
+    return
+  for stream in [ handle.stdin, handle.stdout, handle.stderr ]:
+    if stream:
+      stream.close()
+
+
 def PathsToAllParentFolders( path ):
   folder = os.path.normpath( path )
   if os.path.isdir( folder ):
@@ -382,10 +396,18 @@ def GetShortPathName( path ):
 def LoadPythonSource( name, pathname ):
   if PY2:
     import imp
-    return imp.load_source( name, pathname )
-  else:
-    import importlib
-    return importlib.machinery.SourceFileLoader( name, pathname ).load_module()
+    try:
+      return imp.load_source( name, pathname )
+    except UnicodeEncodeError:
+      # imp.load_source doesn't handle non-ASCII characters in pathname. See
+      # http://bugs.python.org/issue9425
+      source = ReadFile( pathname )
+      module = imp.new_module( name )
+      module.__file__ = pathname
+      exec( source, module.__dict__ )
+      return module
+  import importlib
+  return importlib.machinery.SourceFileLoader( name, pathname ).load_module()
 
 
 def SplitLines( contents ):
@@ -429,3 +451,17 @@ def SplitLines( contents ):
     lines.append( '' )
 
   return lines
+
+
+def GetCurrentDirectory():
+  """Returns the current directory as an unicode object. If the current
+  directory does not exist anymore, returns the temporary folder instead."""
+  try:
+    if PY2:
+      return os.getcwdu()
+    return os.getcwd()
+  # os.getcwdu throws an OSError exception when the current directory has been
+  # deleted while os.getcwd throws a FileNotFoundError, which is a subclass of
+  # OSError.
+  except OSError:
+    return tempfile.gettempdir()

@@ -1,6 +1,7 @@
 # coding: utf-8
 #
-# Copyright (C) 2013  Google Inc.
+# Copyright (C) 2013 Google Inc.
+#               2016 YouCompleteMe contributors
 #
 # This file is part of YouCompleteMe.
 #
@@ -21,15 +22,14 @@ from __future__ import unicode_literals
 from __future__ import print_function
 from __future__ import division
 from __future__ import absolute_import
-from future import standard_library
-standard_library.install_aliases()
+# Not installing aliases from python-future; it's unreliable and slow.
 from builtins import *  # noqa
 
 import contextlib
 from nose.tools import eq_, ok_
 from mock import patch
 
-from ycm.test_utils import MockVimModule
+from ycm.tests.test_utils import MockVimModule
 vim_mock = MockVimModule()
 from ycm import base
 
@@ -211,6 +211,22 @@ def LastEnteredCharIsIdentifierChar_NotIdentChar_test():
       ok_( not base.LastEnteredCharIsIdentifierChar() )
 
 
+def LastEnteredCharIsIdentifierChar_Unicode_test():
+  with MockCurrentFiletypes():
+    # CurrentColumn returns a byte offset and character ø is 2 bytes length.
+    with MockCurrentColumnAndLineContents( 5, 'føo(' ):
+      ok_( not base.LastEnteredCharIsIdentifierChar() )
+
+    with MockCurrentColumnAndLineContents( 4, 'føo(' ):
+      ok_( base.LastEnteredCharIsIdentifierChar() )
+
+    with MockCurrentColumnAndLineContents( 3, 'føo(' ):
+      ok_( base.LastEnteredCharIsIdentifierChar() )
+
+    with MockCurrentColumnAndLineContents( 1, 'føo(' ):
+      ok_( base.LastEnteredCharIsIdentifierChar() )
+
+
 def CurrentIdentifierFinished_Basic_test():
   with MockCurrentFiletypes():
     with MockCurrentColumnAndLineContents( 3, 'ab;' ):
@@ -234,10 +250,13 @@ def CurrentIdentifierFinished_NothingBeforeColumn_test():
 def CurrentIdentifierFinished_InvalidColumn_test():
   with MockCurrentFiletypes():
     with MockCurrentColumnAndLineContents( 5, '' ):
-      ok_( not base.CurrentIdentifierFinished() )
+      ok_( base.CurrentIdentifierFinished() )
 
     with MockCurrentColumnAndLineContents( 5, 'abc' ):
       ok_( not base.CurrentIdentifierFinished() )
+
+    with MockCurrentColumnAndLineContents( 4, 'ab;' ):
+      ok_( base.CurrentIdentifierFinished() )
 
 
 def CurrentIdentifierFinished_InMiddleOfLine_test():
@@ -268,3 +287,19 @@ def CurrentIdentifierFinished_WhitespaceOnly_test():
 
     with MockCurrentColumnAndLineContents( 3, '\t\t\t\t' ):
       ok_( base.CurrentIdentifierFinished() )
+
+
+def CurrentIdentifierFinished_Unicode_test():
+  with MockCurrentFiletypes():
+    # CurrentColumn returns a byte offset and character ø is 2 bytes length.
+    with MockCurrentColumnAndLineContents( 6, 'føo ' ):
+      ok_( base.CurrentIdentifierFinished() )
+
+    with MockCurrentColumnAndLineContents( 5, 'føo ' ):
+      ok_( base.CurrentIdentifierFinished() )
+
+    with MockCurrentColumnAndLineContents( 4, 'føo ' ):
+      ok_( not base.CurrentIdentifierFinished() )
+
+    with MockCurrentColumnAndLineContents( 3, 'føo ' ):
+      ok_( not base.CurrentIdentifierFinished() )

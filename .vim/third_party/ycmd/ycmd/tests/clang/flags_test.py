@@ -19,106 +19,157 @@ from __future__ import unicode_literals
 from __future__ import print_function
 from __future__ import division
 from __future__ import absolute_import
-from future import standard_library
-standard_library.install_aliases()
+# Not installing aliases from python-future; it's unreliable and slow.
 from builtins import *  # noqa
+
+import contextlib
+import os
 
 from nose.tools import eq_, ok_
 from ycmd.completers.cpp import flags
-from mock import patch, Mock
+from mock import patch, MagicMock, Mock
+from types import ModuleType
 from ycmd.tests.test_utils import MacOnly
+from ycmd.responses import NoExtraConfDetected
+from ycmd.tests.clang import TemporaryClangProject, TemporaryClangTestDir
 
-from hamcrest import assert_that, contains
+from hamcrest import assert_that, calling, contains, has_item, not_, raises
+
+
+@contextlib.contextmanager
+def MockExtraConfModule( flags_for_file_function ):
+  module = MagicMock( spec = ModuleType )
+  module.FlagsForFile = flags_for_file_function
+  with patch( 'ycmd.extra_conf_store.ModuleForSourceFile',
+              return_value = module ):
+    yield
+
+
+def FlagsForFile_FlagsNotReady_test():
+  flags_object = flags.Flags()
+
+  def FlagsForFile( filename ):
+    return {
+      'flags': [],
+      'flags_ready': False
+    }
+
+  with MockExtraConfModule( FlagsForFile ):
+    flags_list = flags_object.FlagsForFile( '/foo', False )
+    eq_( list( flags_list ), [] )
 
 
 @patch( 'ycmd.extra_conf_store.ModuleForSourceFile', return_value = Mock() )
 def FlagsForFile_BadNonUnicodeFlagsAreAlsoRemoved_test( *args ):
-  fake_flags = {
-    'flags': [ bytes( b'-c' ), '-c', bytes( b'-foo' ), '-bar' ]
-  }
+  flags_object = flags.Flags()
 
-  with patch( 'ycmd.completers.cpp.flags._CallExtraConfFlagsForFile',
-              return_value = fake_flags ):
-    flags_object = flags.Flags()
+  def FlagsForFile( filename ):
+    return {
+      'flags': [ bytes( b'-c' ), '-c', bytes( b'-foo' ), '-bar' ]
+    }
+
+  with MockExtraConfModule( FlagsForFile ):
     flags_list = flags_object.FlagsForFile( '/foo', False )
     eq_( list( flags_list ), [ '-foo', '-bar' ] )
 
 
-@patch( 'ycmd.extra_conf_store.ModuleForSourceFile', return_value = Mock() )
-def FlagsForFile_FlagsCachedByDefault_test( *args ):
+def FlagsForFile_FlagsCachedByDefault_test():
   flags_object = flags.Flags()
 
-  results = { 'flags': [ '-x', 'c' ] }
-  with patch( 'ycmd.completers.cpp.flags._CallExtraConfFlagsForFile',
-              return_value = results ):
+  def FlagsForFile( filename ):
+    return {
+      'flags': [ '-x', 'c' ]
+    }
+
+  with MockExtraConfModule( FlagsForFile ):
     flags_list = flags_object.FlagsForFile( '/foo', False )
     assert_that( flags_list, contains( '-x', 'c' ) )
 
-  results[ 'flags' ] = [ '-x', 'c++' ]
-  with patch( 'ycmd.completers.cpp.flags._CallExtraConfFlagsForFile',
-              return_value = results ):
+  def FlagsForFile( filename ):
+    return {
+      'flags': [ '-x', 'c++' ]
+    }
+
+  with MockExtraConfModule( FlagsForFile ):
     flags_list = flags_object.FlagsForFile( '/foo', False )
     assert_that( flags_list, contains( '-x', 'c' ) )
 
 
-@patch( 'ycmd.extra_conf_store.ModuleForSourceFile', return_value = Mock() )
-def FlagsForFile_FlagsNotCachedWhenDoCacheIsFalse_test( *args ):
+def FlagsForFile_FlagsNotCachedWhenDoCacheIsFalse_test():
   flags_object = flags.Flags()
 
-  results = {
-    'flags': [ '-x', 'c' ],
-    'do_cache': False
-  }
-  with patch( 'ycmd.completers.cpp.flags._CallExtraConfFlagsForFile',
-              return_value = results ):
+  def FlagsForFile( filename ):
+    return {
+      'flags': [ '-x', 'c' ],
+      'do_cache': False
+    }
+
+  with MockExtraConfModule( FlagsForFile ):
     flags_list = flags_object.FlagsForFile( '/foo', False )
     assert_that( flags_list, contains( '-x', 'c' ) )
 
-  results[ 'flags' ] = [ '-x', 'c++' ]
-  with patch( 'ycmd.completers.cpp.flags._CallExtraConfFlagsForFile',
-              return_value = results ):
+  def FlagsForFile( filename ):
+    return {
+      'flags': [ '-x', 'c++' ]
+    }
+
+  with MockExtraConfModule( FlagsForFile ):
     flags_list = flags_object.FlagsForFile( '/foo', False )
     assert_that( flags_list, contains( '-x', 'c++' ) )
 
 
-@patch( 'ycmd.extra_conf_store.ModuleForSourceFile', return_value = Mock() )
-def FlagsForFile_FlagsCachedWhenDoCacheIsTrue_test( *args ):
+def FlagsForFile_FlagsCachedWhenDoCacheIsTrue_test():
   flags_object = flags.Flags()
 
-  results = {
-    'flags': [ '-x', 'c' ],
-    'do_cache': True
-  }
-  with patch( 'ycmd.completers.cpp.flags._CallExtraConfFlagsForFile',
-              return_value = results ):
+  def FlagsForFile( filename ):
+    return {
+      'flags': [ '-x', 'c' ],
+      'do_cache': True
+    }
+
+  with MockExtraConfModule( FlagsForFile ):
     flags_list = flags_object.FlagsForFile( '/foo', False )
     assert_that( flags_list, contains( '-x', 'c' ) )
 
-  results[ 'flags' ] = [ '-x', 'c++' ]
-  with patch( 'ycmd.completers.cpp.flags._CallExtraConfFlagsForFile',
-              return_value = results ):
+  def FlagsForFile( filename ):
+    return {
+      'flags': [ '-x', 'c++' ]
+    }
+
+  with MockExtraConfModule( FlagsForFile ):
     flags_list = flags_object.FlagsForFile( '/foo', False )
     assert_that( flags_list, contains( '-x', 'c' ) )
 
 
-def SanitizeFlags_Passthrough_test():
-  eq_( [ '-foo', '-bar' ],
-       list( flags._SanitizeFlags( [ '-foo', '-bar' ] ) ) )
+def FlagsForFile_DoNotMakeRelativePathsAbsoluteByDefault_test():
+  flags_object = flags.Flags()
+
+  def FlagsForFile( filename ):
+    return {
+      'flags': [ '-x', 'c', '-I', 'header' ]
+    }
+
+  with MockExtraConfModule( FlagsForFile ):
+    flags_list = flags_object.FlagsForFile( '/foo', False )
+    assert_that( flags_list,
+                 contains( '-x', 'c',
+                           '-I', 'header' ) )
 
 
-def SanitizeFlags_ArchRemoved_test():
-  expected = [ '-foo', '-bar' ]
-  to_remove = [ '-arch', 'arch_of_evil' ]
+def FlagsForFile_MakeRelativePathsAbsoluteIfOptionSpecified_test():
+  flags_object = flags.Flags()
 
-  eq_( expected,
-       list( flags._SanitizeFlags( expected + to_remove ) ) )
+  def FlagsForFile( filename ):
+    return {
+      'flags': [ '-x', 'c', '-I', 'header' ],
+      'include_paths_relative_to_dir': '/working_dir/'
+    }
 
-  eq_( expected,
-       list( flags._SanitizeFlags( to_remove + expected ) ) )
-
-  eq_( expected,
-       list( flags._SanitizeFlags(
-         expected[ :1 ] + to_remove + expected[ -1: ] ) ) )
+  with MockExtraConfModule( FlagsForFile ):
+    flags_list = flags_object.FlagsForFile( '/foo', False )
+    assert_that( flags_list,
+                 contains( '-x', 'c',
+                           '-I', os.path.normpath( '/working_dir/header' ) ) )
 
 
 def RemoveUnusedFlags_Passthrough_test():
@@ -300,12 +351,12 @@ def RemoveXclangFlags_test():
        flags._RemoveXclangFlags( expected + to_remove + expected ) )
 
 
-def CompilerToLanguageFlag_Passthrough_test():
+def AddLanguageFlagWhenAppropriate_Passthrough_test():
   eq_( [ '-foo', '-bar' ],
-       flags._CompilerToLanguageFlag( [ '-foo', '-bar' ] ) )
+       flags._AddLanguageFlagWhenAppropriate( [ '-foo', '-bar' ] ) )
 
 
-def _ReplaceCompilerTester( compiler, language ):
+def _AddLanguageFlagWhenAppropriateTester( compiler, language_flag = [] ):
   to_removes = [
     [],
     [ '/usr/bin/ccache' ],
@@ -314,19 +365,20 @@ def _ReplaceCompilerTester( compiler, language ):
   expected = [ '-foo', '-bar' ]
 
   for to_remove in to_removes:
-    eq_( [ compiler, '-x', language ] + expected,
-         flags._CompilerToLanguageFlag( to_remove + [ compiler ] + expected ) )
+    eq_( [ compiler ] + language_flag + expected,
+         flags._AddLanguageFlagWhenAppropriate( to_remove + [ compiler ] +
+                                                expected ) )
 
 
-def CompilerToLanguageFlag_ReplaceCCompiler_test():
+def AddLanguageFlagWhenAppropriate_CCompiler_test():
   compilers = [ 'cc', 'gcc', 'clang', '/usr/bin/cc',
                 '/some/other/path', 'some_command' ]
 
   for compiler in compilers:
-    yield _ReplaceCompilerTester, compiler, 'c'
+    yield _AddLanguageFlagWhenAppropriateTester, compiler
 
 
-def CompilerToLanguageFlag_ReplaceCppCompiler_test():
+def AddLanguageFlagWhenAppropriate_CppCompiler_test():
   compilers = [ 'c++', 'g++', 'clang++', '/usr/bin/c++',
                 '/some/other/path++', 'some_command++',
                 'c++-5', 'g++-5.1', 'clang++-3.7.3', '/usr/bin/c++-5',
@@ -335,7 +387,7 @@ def CompilerToLanguageFlag_ReplaceCppCompiler_test():
                 '/some/other/path++-4.9.31', 'some_command++-5.10' ]
 
   for compiler in compilers:
-    yield _ReplaceCompilerTester, compiler, 'c++'
+    yield _AddLanguageFlagWhenAppropriateTester, compiler, [ '-x', 'c++' ]
 
 
 def ExtraClangFlags_test():
@@ -375,3 +427,486 @@ def Mac_PathsForAllMacToolchains_test():
        [ '/Applications/Xcode.app/Contents/Developer/Toolchains/'
          'XcodeDefault.xctoolchain/test',
          '/Library/Developer/CommandLineTools/test' ] )
+
+
+def CompilationDatabase_NoDatabase_test():
+  with TemporaryClangTestDir() as tmp_dir:
+    assert_that(
+      calling( flags.Flags().FlagsForFile ).with_args(
+        os.path.join( tmp_dir, 'test.cc' ) ),
+      raises( NoExtraConfDetected ) )
+
+
+@MacOnly
+@patch( 'ycmd.completers.cpp.flags._MacIncludePaths',
+        return_value = [ 'sentinel_value_for_testing' ] )
+def PrepareFlagsForClang_NoSysroot_test( *args ):
+  assert_that(
+    list( flags.PrepareFlagsForClang( [ '-test', '--test1', '--test2=test' ],
+                                      'test.cc',
+                                      True ) ),
+    has_item( 'sentinel_value_for_testing' ) )
+
+
+@MacOnly
+@patch( 'ycmd.completers.cpp.flags._MacIncludePaths',
+        return_value = [ 'sentinel_value_for_testing' ] )
+def PrepareFlagsForClang_Sysroot_test( *args ):
+  assert_that(
+    list( flags.PrepareFlagsForClang( [ '-isysroot', 'test1', '--test2=test' ],
+                                      'test.cc',
+                                      True ) ),
+    not_( has_item( 'sentinel_value_for_testing' ) ) )
+
+  assert_that(
+    list( flags.PrepareFlagsForClang( [ '-test', '--sysroot', 'test1' ],
+                                      'test.cc',
+                                      True ) ),
+    not_( has_item( 'sentinel_value_for_testing' ) ) )
+
+  assert_that(
+    list( flags.PrepareFlagsForClang( [ '-test', 'test1', '--sysroot=test' ],
+                                      'test.cc',
+                                      True ) ),
+    not_( has_item( 'sentinel_value_for_testing' ) ) )
+
+
+def CompilationDatabase_FileNotInDatabase_test():
+  compile_commands = [ ]
+  with TemporaryClangTestDir() as tmp_dir:
+    with TemporaryClangProject( tmp_dir, compile_commands ):
+      eq_(
+        flags.Flags().FlagsForFile( os.path.join( tmp_dir, 'test.cc' ) ),
+        [] )
+
+
+def CompilationDatabase_InvalidDatabase_test():
+  with TemporaryClangTestDir() as tmp_dir:
+    with TemporaryClangProject( tmp_dir, 'this is junk' ):
+      assert_that(
+        calling( flags.Flags().FlagsForFile ).with_args(
+          os.path.join( tmp_dir, 'test.cc' ) ),
+        raises( NoExtraConfDetected ) )
+
+
+def CompilationDatabase_UseFlagsFromDatabase_test():
+  with TemporaryClangTestDir() as tmp_dir:
+    compile_commands = [
+      {
+        'directory': tmp_dir,
+        'command': 'clang++ -x c++ -I. -I/absolute/path -Wall',
+        'file': os.path.join( tmp_dir, 'test.cc' ),
+      },
+    ]
+    with TemporaryClangProject( tmp_dir, compile_commands ):
+      assert_that(
+        flags.Flags().FlagsForFile(
+          os.path.join( tmp_dir, 'test.cc' ),
+          add_extra_clang_flags = False ),
+        contains( 'clang++',
+                  '-x',
+                  'c++',
+                  '-x',
+                  'c++',
+                  '-I' + os.path.normpath( tmp_dir ),
+                  '-I' + os.path.normpath( '/absolute/path' ),
+                  '-Wall' ) )
+
+
+def CompilationDatabase_UseFlagsFromSameDir_test():
+  with TemporaryClangTestDir() as tmp_dir:
+    compile_commands = [
+      {
+        'directory': tmp_dir,
+        'command': 'clang++ -x c++ -Wall',
+        'file': os.path.join( tmp_dir, 'test.cc' ),
+      },
+    ]
+
+    with TemporaryClangProject( tmp_dir, compile_commands ):
+      f = flags.Flags()
+
+      # If we now ask for a file _not_ in the DB, we get []
+      eq_(
+        f.FlagsForFile(
+          os.path.join( tmp_dir, 'test1.cc' ),
+          add_extra_clang_flags = False ),
+        [] )
+
+      # Then, we ask for a file that _is_ in the db. It will cache these flags
+      # against the files' directory.
+      assert_that(
+        f.FlagsForFile(
+          os.path.join( tmp_dir, 'test.cc' ),
+          add_extra_clang_flags = False ),
+        contains( 'clang++',
+                  '-x',
+                  'c++',
+                  '-x',
+                  'c++',
+                  '-Wall' ) )
+
+      # If we now ask for a file _not_ in the DB, but in the same dir, we should
+      # get the same flags
+      assert_that(
+        f.FlagsForFile(
+          os.path.join( tmp_dir, 'test2.cc' ),
+          add_extra_clang_flags = False ),
+        contains( 'clang++',
+                  '-x',
+                  'c++',
+                  '-x',
+                  'c++',
+                  '-Wall' ) )
+
+
+def CompilationDatabase_HeaderFileHeuristic_test():
+  with TemporaryClangTestDir() as tmp_dir:
+    compile_commands = [
+      {
+        'directory': tmp_dir,
+        'command': 'clang++ -x c++ -Wall',
+        'file': os.path.join( tmp_dir, 'test.cc' ),
+      },
+    ]
+
+    with TemporaryClangProject( tmp_dir, compile_commands ):
+      # If we ask for a header file, it returns the equivalent cc file
+      assert_that(
+        flags.Flags().FlagsForFile(
+          os.path.join( tmp_dir, 'test.h' ),
+          add_extra_clang_flags = False ),
+        contains( 'clang++',
+                  '-x',
+                  'c++',
+                  '-x',
+                  'c++',
+                  '-Wall' ) )
+
+
+def CompilationDatabase_HeaderFileHeuristicNotFound_test():
+  with TemporaryClangTestDir() as tmp_dir:
+    compile_commands = [
+      {
+        'directory': tmp_dir,
+        'command': 'clang++ -x c++ -Wall',
+        'file': os.path.join( tmp_dir, 'test.cc' ),
+      },
+    ]
+
+    with TemporaryClangProject( tmp_dir, compile_commands ):
+      # If we ask for a header file, it returns the equivalent cc file (if and
+      # only if there are flags for that file)
+      eq_(
+        flags.Flags().FlagsForFile(
+          os.path.join( tmp_dir, 'not_in_the_db.h' ),
+          add_extra_clang_flags = False ),
+        [] )
+
+
+def CompilationDatabase_ExplicitHeaderFileEntry_test():
+  with TemporaryClangTestDir() as tmp_dir:
+    # Have an explicit header file entry which should take priority over the
+    # corresponding source file
+    compile_commands = [
+      {
+        'directory': tmp_dir,
+        'command': 'clang++ -x c++ -I. -I/absolute/path -Wall',
+        'file': os.path.join( tmp_dir, 'test.cc' ),
+      },
+      {
+        'directory': tmp_dir,
+        'command': 'clang++ -I/absolute/path -Wall',
+        'file': os.path.join( tmp_dir, 'test.h' ),
+      },
+    ]
+    with TemporaryClangProject( tmp_dir, compile_commands ):
+      assert_that(
+        flags.Flags().FlagsForFile(
+          os.path.join( tmp_dir, 'test.h' ),
+          add_extra_clang_flags = False ),
+        contains( 'clang++',
+                  '-x',
+                  'c++',
+                  '-I' + os.path.normpath( '/absolute/path' ),
+                  '-Wall' ) )
+
+
+def _MakeRelativePathsInFlagsAbsoluteTest( test ):
+  wd = test[ 'wd' ] if 'wd' in test else '/not_test'
+  assert_that(
+    flags._MakeRelativePathsInFlagsAbsolute( test[ 'flags' ], wd ),
+    contains( *test[ 'expect' ] ) )
+
+
+def MakeRelativePathsInFlagsAbsolute_test():
+  tests = [
+    # Already absolute, positional arguments
+    {
+      'flags':  [ '-isystem', '/test' ],
+      'expect': [ '-isystem', os.path.normpath( '/test' ) ],
+    },
+    {
+      'flags':  [ '-I', '/test' ],
+      'expect': [ '-I', os.path.normpath( '/test' ) ],
+    },
+    {
+      'flags':  [ '-iquote', '/test' ],
+      'expect': [ '-iquote', os.path.normpath( '/test' ) ],
+    },
+    {
+      'flags':  [ '-isysroot', '/test' ],
+      'expect': [ '-isysroot', os.path.normpath( '/test' ) ],
+    },
+    {
+      'flags':  [ '-include-pch', '/test' ],
+      'expect': [ '-include-pch', os.path.normpath( '/test' ) ],
+    },
+
+    # Already absolute, single arguments
+    {
+      'flags':  [ '-isystem/test' ],
+      'expect': [ '-isystem' + os.path.normpath( '/test' ) ],
+    },
+    {
+      'flags':  [ '-I/test' ],
+      'expect': [ '-I' + os.path.normpath( '/test' ) ],
+    },
+    {
+      'flags':  [ '-iquote/test' ],
+      'expect': [ '-iquote' + os.path.normpath( '/test' ) ],
+    },
+    {
+      'flags':  [ '-isysroot/test' ],
+      'expect': [ '-isysroot' + os.path.normpath( '/test' ) ],
+    },
+    {
+      'flags':  [ '-include-pch/test' ],
+      'expect': [ '-include-pch' + os.path.normpath( '/test' ) ],
+    },
+
+    # Already absolute, double-dash arguments
+    {
+      'flags':  [ '--isystem=/test' ],
+      'expect': [ '--isystem=/test' ],
+    },
+    {
+      'flags':  [ '--I=/test' ],
+      'expect': [ '--I=/test' ],
+    },
+    {
+      'flags':  [ '--iquote=/test' ],
+      'expect': [ '--iquote=/test' ],
+    },
+    {
+      'flags':  [ '--sysroot=/test' ],
+      'expect': [ '--sysroot=' + os.path.normpath( '/test' ) ],
+    },
+    {
+      'flags':  [ '--include-pch=/test' ],
+      'expect': [ '--include-pch=/test' ],
+    },
+
+    # Relative, positional arguments
+    {
+      'flags':  [ '-isystem', 'test' ],
+      'expect': [ '-isystem', os.path.normpath( '/test/test' ) ],
+      'wd':     '/test',
+    },
+    {
+      'flags':  [ '-I', 'test' ],
+      'expect': [ '-I', os.path.normpath( '/test/test' ) ],
+      'wd':     '/test',
+    },
+    {
+      'flags':  [ '-iquote', 'test' ],
+      'expect': [ '-iquote', os.path.normpath( '/test/test' ) ],
+      'wd':     '/test',
+    },
+    {
+      'flags':  [ '-isysroot', 'test' ],
+      'expect': [ '-isysroot', os.path.normpath( '/test/test' ) ],
+      'wd':     '/test',
+    },
+    {
+      'flags':  [ '-include-pch', 'test' ],
+      'expect': [ '-include-pch', os.path.normpath( '/test/test' ) ],
+      'wd':     '/test',
+    },
+
+    # Relative, single arguments
+    {
+      'flags':  [ '-isystemtest' ],
+      'expect': [ '-isystem' + os.path.normpath( '/test/test' ) ],
+      'wd':     '/test',
+    },
+    {
+      'flags':  [ '-Itest' ],
+      'expect': [ '-I' + os.path.normpath( '/test/test' ) ],
+      'wd':     '/test',
+    },
+    {
+      'flags':  [ '-iquotetest' ],
+      'expect': [ '-iquote' + os.path.normpath( '/test/test' ) ],
+      'wd':     '/test',
+    },
+    {
+      'flags':  [ '-isysroottest' ],
+      'expect': [ '-isysroot' + os.path.normpath( '/test/test' ) ],
+      'wd':     '/test',
+    },
+    {
+      'flags':  [ '-include-pchtest' ],
+      'expect': [ '-include-pch' + os.path.normpath( '/test/test' ) ],
+      'wd':     '/test',
+    },
+
+    # Already absolute, double-dash arguments
+    {
+      'flags':  [ '--isystem=test' ],
+      'expect': [ '--isystem=test' ],
+      'wd':     '/test',
+    },
+    {
+      'flags':  [ '--I=test' ],
+      'expect': [ '--I=test' ],
+      'wd':     '/test',
+    },
+    {
+      'flags':  [ '--iquote=test' ],
+      'expect': [ '--iquote=test' ],
+      'wd':     '/test',
+    },
+    {
+      'flags':  [ '--sysroot=test' ],
+      'expect': [ '--sysroot=' + os.path.normpath( '/test/test' ) ],
+      'wd':     '/test',
+    },
+    {
+      'flags':  [ '--include-pch=test' ],
+      'expect': [ '--include-pch=test' ],
+      'wd':     '/test',
+    },
+  ]
+
+  for test in tests:
+    yield _MakeRelativePathsInFlagsAbsoluteTest, test
+
+
+def MakeRelativePathsInFlagsAbsolute_IgnoreUnknown_test():
+  tests = [
+    {
+      'flags': [
+        'ignored',
+        '-isystem',
+        '/test',
+        '-ignored',
+        '-I',
+        '/test',
+        '--ignored=ignored'
+      ],
+      'expect': [
+        'ignored',
+        '-isystem', os.path.normpath( '/test' ),
+        '-ignored',
+        '-I', os.path.normpath( '/test' ),
+        '--ignored=ignored'
+      ]
+    },
+    {
+      'flags': [
+        'ignored',
+        '-isystem/test',
+        '-ignored',
+        '-I/test',
+        '--ignored=ignored'
+      ],
+      'expect': [
+        'ignored',
+        '-isystem' + os.path.normpath( '/test' ),
+        '-ignored',
+        '-I' + os.path.normpath( '/test/' ),
+        '--ignored=ignored'
+      ]
+    },
+    {
+      'flags': [
+        'ignored',
+        '--isystem=/test',
+        '-ignored',
+        '--I=/test',
+        '--ignored=ignored'
+      ],
+      'expect': [
+        'ignored',
+        '--isystem=/test',
+        '-ignored',
+        '--I=/test',
+        '--ignored=ignored'
+      ]
+    },
+    {
+      'flags': [
+        'ignored',
+        '-isystem', 'test',
+        '-ignored',
+        '-I', 'test',
+        '--ignored=ignored'
+      ],
+      'expect': [
+        'ignored',
+        '-isystem', os.path.normpath( '/test/test' ),
+        '-ignored',
+        '-I', os.path.normpath( '/test/test' ),
+        '--ignored=ignored'
+      ],
+      'wd': '/test',
+    },
+    {
+      'flags': [
+        'ignored',
+        '-isystemtest',
+        '-ignored',
+        '-Itest',
+        '--ignored=ignored'
+      ],
+      'expect': [
+        'ignored',
+        '-isystem' + os.path.normpath( '/test/test' ),
+        '-ignored',
+        '-I' + os.path.normpath( '/test/test' ),
+        '--ignored=ignored'
+      ],
+      'wd': '/test',
+    },
+    {
+      'flags': [
+        'ignored',
+        '--isystem=test',
+        '-ignored',
+        '--I=test',
+        '--ignored=ignored',
+        '--sysroot=test'
+      ],
+      'expect': [
+        'ignored',
+        '--isystem=test',
+        '-ignored',
+        '--I=test',
+        '--ignored=ignored',
+        '--sysroot=' + os.path.normpath( '/test/test' ),
+      ],
+      'wd': '/test',
+    },
+  ]
+
+  for test in tests:
+    yield _MakeRelativePathsInFlagsAbsoluteTest, test
+
+
+def MakeRelativePathsInFlagsAbsolute_NoWorkingDir_test():
+  yield _MakeRelativePathsInFlagsAbsoluteTest, {
+    'flags': [ 'list', 'of', 'flags', 'not', 'changed', '-Itest' ],
+    'expect': [ 'list', 'of', 'flags', 'not', 'changed', '-Itest' ],
+    'wd': ''
+  }

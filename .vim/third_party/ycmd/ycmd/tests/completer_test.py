@@ -20,8 +20,7 @@ from __future__ import unicode_literals
 from __future__ import print_function
 from __future__ import division
 from __future__ import absolute_import
-from future import standard_library
-standard_library.install_aliases()
+# Not installing aliases from python-future; it's unreliable and slow.
 from builtins import *  # noqa
 
 from ycmd.tests.test_utils import DummyCompleter, ExpectedFailure
@@ -59,6 +58,18 @@ def FilterAndSortCandidates_ServerCompleter_test():
   _FilterAndSortCandidates_Match( [ { 'insertion_text': 'password' } ],
                                   'p',
                                   [ { 'insertion_text': 'password' } ] )
+
+
+def FilterAndSortCandidates_SortOnEmptyQuery_test():
+  _FilterAndSortCandidates_Match( [ 'foo', 'bar' ],
+                                  '',
+                                  [ 'bar', 'foo' ] )
+
+
+def FilterAndSortCandidates_IgnoreEmptyCandidate_test():
+  _FilterAndSortCandidates_Match( [ '' ],
+                                  '',
+                                  [] )
 
 
 @ExpectedFailure( 'Filtering does not support unicode characters',

@@ -21,14 +21,14 @@ from __future__ import absolute_import
 from __future__ import unicode_literals
 from __future__ import print_function
 from __future__ import division
-from future import standard_library
-standard_library.install_aliases()
+# Not installing aliases from python-future; it's unreliable and slow.
 from builtins import *  # noqa
 
-from hamcrest import assert_that, has_item, has_items
+from hamcrest import assert_that, contains_string, has_item, has_items
 
 from ycmd.tests.go import PathToTestFile, SharedYcmd
-from ycmd.tests.test_utils import BuildRequest, CompletionEntryMatcher
+from ycmd.tests.test_utils import ( BuildRequest, CompletionEntryMatcher,
+                                    ExpectedFailure )
 from ycmd.utils import ReadFile
 
 
@@ -65,6 +65,11 @@ def GetCompletions_Unicode_InLine_test( app ):
                           CompletionEntryMatcher( u'Sprintf' ) ) )
 
 
+@ExpectedFailure( 'Filtering and sorting does not support candidates with '
+                  'non-ASCII characters.',
+                  contains_string( "but: a sequence containing a dictionary "
+                                   "containing {'insertion_text': 'Unicøde'} "
+                                   "was <[]>" ) )
 @SharedYcmd
 def GetCompletions_Unicode_Identifier_test( app ):
   filepath = PathToTestFile( 'unicode.go' )

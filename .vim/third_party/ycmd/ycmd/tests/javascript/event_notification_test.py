@@ -19,8 +19,7 @@ from __future__ import print_function
 from __future__ import absolute_import
 from __future__ import unicode_literals
 from __future__ import division
-from future import standard_library
-standard_library.install_aliases()
+# Not installing aliases from python-future; it's unreliable and slow.
 from builtins import *  # noqa
 
 from hamcrest import assert_that, empty
@@ -33,7 +32,7 @@ import os
 from ycmd.tests.test_utils import ( BuildRequest, ErrorMatcher,
                                     WaitUntilCompleterServerReady )
 from ycmd.tests.javascript import IsolatedYcmd, PathToTestFile
-from ycmd.utils import ReadFile
+from ycmd.utils import GetCurrentDirectory, ReadFile
 
 
 @IsolatedYcmd
@@ -98,7 +97,7 @@ def EventNotification_OnFileReadyToParse_NoProjectFile_test( app, *args ):
     response.json,
     ErrorMatcher( RuntimeError,
                   'Warning: Unable to detect a .tern-project file '
-                  'in the hierarchy before ' + os.getcwd() +
+                  'in the hierarchy before ' + GetCurrentDirectory() +
                   ' and no global .tern-config file was found. '
                   'This is required for accurate JavaScript '
                   'completion. Please see the User Guide for '
@@ -143,7 +142,7 @@ def EventNotification_OnFileReadyToParse_NoProjectFile_test( app, *args ):
     response.json,
     ErrorMatcher( RuntimeError,
                   'Warning: Unable to detect a .tern-project file '
-                  'in the hierarchy before ' + os.getcwd() +
+                  'in the hierarchy before ' + GetCurrentDirectory() +
                   ' and no global .tern-config file was found. '
                   'This is required for accurate JavaScript '
                   'completion. Please see the User Guide for '

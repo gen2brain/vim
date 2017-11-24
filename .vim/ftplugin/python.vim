@@ -15,15 +15,6 @@ set keywordprg=pydoc
 
 set wildignore+=*.pyc
 
-" Map <F5> to re-build tags file
-nmap <silent> <F5>
-                \ :!rm $HOME/.vim/tags && ctags -f $HOME/.vim/tags
-                \ -h ".py" -R --totals=yes
-                \ --tag-relative=yes %:p:h<CR>
-
-" Toggle taglist
-nnoremap <silent> <F6> :TlistToggle<CR>
-
 " Tasks
 nmap <silent> <F8> :vimgrep /TODO\\|FIXME/gj **/*.py \| copen<CR>
 

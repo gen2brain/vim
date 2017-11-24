@@ -141,15 +141,16 @@ func (m *package_file_cache) process_package_data(data []byte) {
 	})
 
 	// hack, add ourselves to the package scope
-	m.add_package_to_scope("#"+m.defalias, m.name)
+	mainName := "#" + m.defalias
+	m.add_package_to_scope(mainName, m.name)
 
-	// WTF is that? :D
-	for key, value := range m.scope.entities {
-		if strings.HasPrefix(key, "$") {
+	// replace dummy package decls in package scope to actual packages
+	for key := range m.scope.entities {
+		if !strings.HasPrefix(key, "#") && !strings.HasPrefix(key, "!") {
 			continue
 		}
-		pkg, ok := m.others[value.name]
-		if !ok && value.name == m.name {
+		pkg, ok := m.others[key]
+		if !ok && key == mainName {
 			pkg = m.main
 		}
 		m.scope.replace_decl(key, pkg)
@@ -167,7 +168,7 @@ func add_ast_decl_to_package(pkg *decl, decl ast.Decl, scope *scope) {
 		for i, name := range data.names {
 			typ, v, vi := data.type_value_index(i)
 
-			d := new_decl_full(name.Name, class, decl_foreign, typ, v, vi, scope)
+			d := new_decl_full(name.Name, class, decl_foreign|ast_decl_flags(data.decl), typ, v, vi, scope)
 			if d == nil {
 				return
 			}
@@ -239,11 +240,6 @@ package unsafe
 	func @"".Offsetof (? any) uintptr
 	func @"".Sizeof (? any) uintptr
 	func @"".Alignof (? any) uintptr
-	func @"".Typeof (i interface { }) interface { }
-	func @"".Reflect (i interface { }) (typ interface { }, addr @"".Pointer)
-	func @"".Unreflect (typ interface { }, addr @"".Pointer) interface { }
-	func @"".New (typ interface { }) @"".Pointer
-	func @"".NewArray (typ interface { }, n int) @"".Pointer
 
 $$
 `)

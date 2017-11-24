@@ -21,18 +21,18 @@
 from __future__ import division
 from __future__ import print_function
 from __future__ import absolute_import
-from future import standard_library
-standard_library.install_aliases()
+# Not installing aliases from python-future; it's unreliable and slow.
 from builtins import *  # noqa
 
 import os
 import subprocess
 import tempfile
-from shutil import rmtree
 import ycm_core
 from future.utils import native
+from hamcrest import assert_that, equal_to, has_property, instance_of
 from mock import patch, call
-from nose.tools import eq_, ok_
+from nose.tools import eq_, ok_, raises
+from types import ModuleType
 from ycmd import utils
 from ycmd.tests.test_utils import ( Py2Only, Py3Only, WindowsOnly, UnixOnly,
                                     CurrentWorkingDirectory,
@@ -162,6 +162,57 @@ def ToUnicode_None_test():
 
 
 @Py2Only
+def JoinLinesAsUnicode_Py2Bytes_test():
+  value = utils.JoinLinesAsUnicode( [ bytes( 'abc' ), bytes( 'xyz' ) ] )
+  eq_( value, u'abc\nxyz' )
+  ok_( isinstance( value, str ) )
+
+
+@Py2Only
+def JoinLinesAsUnicode_Py2Str_test():
+  value = utils.JoinLinesAsUnicode( [ 'abc', 'xyz' ] )
+  eq_( value, u'abc\nxyz' )
+  ok_( isinstance( value, str ) )
+
+
+@Py2Only
+def JoinLinesAsUnicode_Py2FutureStr_test():
+  value = utils.JoinLinesAsUnicode( [ str( 'abc' ), str( 'xyz' ) ] )
+  eq_( value, u'abc\nxyz' )
+  ok_( isinstance( value, str ) )
+
+
+@Py2Only
+def JoinLinesAsUnicode_Py2Unicode_test():
+  value = utils.JoinLinesAsUnicode( [ u'abc', u'xyz' ] )
+  eq_( value, u'abc\nxyz' )
+  ok_( isinstance( value, str ) )
+
+
+def JoinLinesAsUnicode_Bytes_test():
+  value = utils.JoinLinesAsUnicode( [ bytes( b'abc' ), bytes( b'xyz' ) ] )
+  eq_( value, u'abc\nxyz' )
+  ok_( isinstance( value, str ) )
+
+
+def JoinLinesAsUnicode_Str_test():
+  value = utils.JoinLinesAsUnicode( [ u'abc', u'xyz' ] )
+  eq_( value, u'abc\nxyz' )
+  ok_( isinstance( value, str ) )
+
+
+def JoinLinesAsUnicode_EmptyList_test():
+  value = utils.JoinLinesAsUnicode( [ ] )
+  eq_( value, u'' )
+  ok_( isinstance( value, str ) )
+
+
+@raises( ValueError )
+def JoinLinesAsUnicode_BadInput_test():
+  utils.JoinLinesAsUnicode( [ 42 ] )
+
+
+@Py2Only
 def ToCppStringCompatible_Py2Str_test():
   value = utils.ToCppStringCompatible( 'abc' )
   eq_( value, 'abc' )
@@ -236,26 +287,6 @@ def ToCppStringCompatible_Py3Int_test():
   vector = ycm_core.StringVector()
   vector.append( value )
   eq_( vector[ 0 ], '123' )
-
-
-def PathToCreatedTempDir_DirDoesntExist_test():
-  tempdir = PathToTestFile( 'tempdir' )
-  rmtree( tempdir, ignore_errors = True )
-
-  try:
-    eq_( utils.PathToCreatedTempDir( tempdir ), tempdir )
-  finally:
-    rmtree( tempdir, ignore_errors = True )
-
-
-def PathToCreatedTempDir_DirDoesExist_test():
-  tempdir = PathToTestFile( 'tempdir' )
-  os.makedirs( tempdir )
-
-  try:
-    eq_( utils.PathToCreatedTempDir( tempdir ), tempdir )
-  finally:
-    rmtree( tempdir, ignore_errors = True )
 
 
 def RemoveIfExists_Exists_test():
@@ -516,3 +547,25 @@ def FindExecutable_CurrentDirectory_test():
 def FindExecutable_AdditionalPathExt_test():
   with TemporaryExecutable( extension = '.xyz' ) as executable:
     eq_( executable, utils.FindExecutable( executable ) )
+
+
+def LoadPythonSource_UnicodePath_test():
+  filename = PathToTestFile( u'uni¢𐍈d€.py' )
+  module = utils.LoadPythonSource( 'module_name', filename )
+  assert_that( module, instance_of( ModuleType ) )
+  assert_that( module.__file__, equal_to( filename ) )
+  assert_that( module.__name__, equal_to( 'module_name' ) )
+  assert_that( module, has_property( 'SomeMethod' ) )
+  assert_that( module.SomeMethod(), equal_to( True ) )
+
+
+@Py2Only
+def GetCurrentDirectory_Py2NoCurrentDirectory_test():
+  with patch( 'os.getcwdu', side_effect = OSError ):
+    eq_( utils.GetCurrentDirectory(), tempfile.gettempdir() )
+
+
+@Py3Only
+def GetCurrentDirectory_Py3NoCurrentDirectory_test():
+  with patch( 'os.getcwd', side_effect = FileNotFoundError ): # noqa
+    eq_( utils.GetCurrentDirectory(), tempfile.gettempdir() )

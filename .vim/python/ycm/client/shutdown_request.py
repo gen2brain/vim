@@ -19,13 +19,10 @@ from __future__ import unicode_literals
 from __future__ import print_function
 from __future__ import division
 from __future__ import absolute_import
-from future import standard_library
-standard_library.install_aliases()
+# Not installing aliases from python-future; it's unreliable and slow.
 from builtins import *  # noqa
 
-from requests.exceptions import ReadTimeout
-
-from ycm.client.base_request import BaseRequest
+from ycm.client.base_request import BaseRequest, HandleServerException
 
 TIMEOUT_SECONDS = 0.1
 
@@ -36,16 +33,8 @@ class ShutdownRequest( BaseRequest ):
 
 
   def Start( self ):
-    try:
-      self.PostDataToHandler( {},
-                              'shutdown',
-                              TIMEOUT_SECONDS )
-    except ReadTimeout:
-      pass
-
-
-  def Response( self ):
-    return self._response
+    with HandleServerException( display = False ):
+      self.PostDataToHandler( {}, 'shutdown', TIMEOUT_SECONDS )
 
 
 def SendShutdownRequest():

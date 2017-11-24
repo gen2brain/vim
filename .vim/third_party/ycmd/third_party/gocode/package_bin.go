@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"go/ast"
 	"go/token"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -45,20 +46,16 @@ import (
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 //-------------------------------------------------------------------------
 
-type aliasedPkgName struct {
-	alias string
-	path  string
-}
-
 type gc_bin_parser struct {
 	data    []byte
 	buf     []byte // for reading strings
-	version string
+	version int    // export format version
 
 	// object lists
-	strList       []string         // in order of appearance
-	pkgList       []aliasedPkgName // in order of appearance
-	typList       []ast.Expr       // in order of appearance
+	strList       []string   // in order of appearance
+	pathList      []string   // in order of appearance
+	pkgList       []string   // in order of appearance
+	typList       []ast.Expr // in order of appearance
 	callback      func(pkg string, decl ast.Decl)
 	pfc           *package_file_cache
 	trackAllTypes bool
@@ -76,38 +73,66 @@ type gc_bin_parser struct {
 
 func (p *gc_bin_parser) init(data []byte, pfc *package_file_cache) {
 	p.data = data
+	p.version = -1           // unknown version
 	p.strList = []string{""} // empty string is mapped to 0
+	p.pathList = []string{""} // empty string is mapped to 0
 	p.pfc = pfc
 }
 
 func (p *gc_bin_parser) parse_export(callback func(string, ast.Decl)) {
 	p.callback = callback
 
-	// read low-level encoding format
-	switch format := p.rawByte(); format {
-	case 'c':
-		// compact format - nothing to do
-	case 'd':
-		p.debugFormat = true
-	default:
-		panic(fmt.Errorf("invalid encoding format in export data: got %q; want 'c' or 'd'", format))
+	// read version info
+	var versionstr string
+	if b := p.rawByte(); b == 'c' || b == 'd' {
+		// Go1.7 encoding; first byte encodes low-level
+		// encoding format (compact vs debug).
+		// For backward-compatibility only (avoid problems with
+		// old installed packages). Newly compiled packages use
+		// the extensible format string.
+		// TODO(gri) Remove this support eventually; after Go1.8.
+		if b == 'd' {
+			p.debugFormat = true
+		}
+		p.trackAllTypes = p.rawByte() == 'a'
+		p.posInfoFormat = p.int() != 0
+		versionstr = p.string()
+		if versionstr == "v1" {
+			p.version = 0
+		}
+	} else {
+		// Go1.8 extensible encoding
+		// read version string and extract version number (ignore anything after the version number)
+		versionstr = p.rawStringln(b)
+		if s := strings.SplitN(versionstr, " ", 3); len(s) >= 2 && s[0] == "version" {
+			if v, err := strconv.Atoi(s[1]); err == nil && v > 0 {
+				p.version = v
+			}
+		}
 	}
 
-	p.trackAllTypes = p.rawByte() == 'a'
-	p.posInfoFormat = p.int() != 0
+	// read version specific flags - extend as necessary
+	switch p.version {
+	// case 6:
+	// 	...
+	//	fallthrough
+	case 5, 4, 3, 2, 1:
+		p.debugFormat = p.rawStringln(p.rawByte()) == "debug"
+		p.trackAllTypes = p.int() != 0
+		p.posInfoFormat = p.int() != 0
+	case 0:
+		// Go1.7 encoding format - nothing to do here
+	default:
+		panic(fmt.Errorf("unknown export format version %d (%q)", p.version, versionstr))
+	}
 
 	// --- generic export data ---
-
-	p.version = p.string()
-	if p.version != "v0" && p.version != "v1" {
-		panic(fmt.Errorf("unknown export data version: %s", p.version))
-	}
 
 	// populate typList with predeclared "known" types
 	p.typList = append(p.typList, predeclared...)
 
 	// read package data
-	p.pfc.defalias = p.pkg().alias
+	p.pfc.defalias = p.pkg()[1:]
 
 	// read objects of phase 1 only (see cmd/compiler/internal/gc/bexport.go)
 	objcount := 0
@@ -126,7 +151,7 @@ func (p *gc_bin_parser) parse_export(callback func(string, ast.Decl)) {
 	}
 }
 
-func (p *gc_bin_parser) pkg() aliasedPkgName {
+func (p *gc_bin_parser) pkg() string {
 	// if the package was seen before, i is its index (>= 0)
 	i := p.tagOrIndex()
 	if i >= 0 {
@@ -135,12 +160,17 @@ func (p *gc_bin_parser) pkg() aliasedPkgName {
 
 	// otherwise, i is the package tag (< 0)
 	if i != packageTag {
-		panic(fmt.Sprintf("unexpected package tag %d", i))
+		panic(fmt.Sprintf("unexpected package tag %d version %d", i, p.version))
 	}
 
 	// read package data
 	name := p.string()
-	path := p.string()
+	var path string
+	if p.version >= 5 {
+		path = p.path()
+	} else {
+		path = p.string()
+	}
 
 	// we should never see an empty package name
 	if name == "" {
@@ -153,12 +183,16 @@ func (p *gc_bin_parser) pkg() aliasedPkgName {
 		panic(fmt.Sprintf("package path %q for pkg index %d", path, len(p.pkgList)))
 	}
 
+	var fullName string
 	if path != "" {
-		p.pfc.add_package_to_scope(name, path)
+		fullName = "!" + path + "!" + name
+		p.pfc.add_package_to_scope(fullName, path)
+	} else {
+		fullName = "#" + name
 	}
 
 	// if the package was imported before, use that one; otherwise create a new one
-	p.pkgList = append(p.pkgList, aliasedPkgName{alias: name, path: path})
+	p.pkgList = append(p.pkgList, fullName)
 	return p.pkgList[len(p.pkgList)-1]
 }
 
@@ -167,9 +201,9 @@ func (p *gc_bin_parser) obj(tag int) {
 	case constTag:
 		p.pos()
 		pkg, name := p.qualifiedName()
-		typ := p.typ(aliasedPkgName{})
+		typ := p.typ("")
 		p.skipValue() // ignore const value, gocode's not interested
-		p.callback(pkg.alias, &ast.GenDecl{
+		p.callback(pkg, &ast.GenDecl{
 			Tok: token.CONST,
 			Specs: []ast.Spec{
 				&ast.ValueSpec{
@@ -179,14 +213,25 @@ func (p *gc_bin_parser) obj(tag int) {
 				},
 			},
 		})
+
+	case aliasTag:
+		// TODO(gri) verify type alias hookup is correct
+		p.pos()
+		pkg, name := p.qualifiedName()
+		typ := p.typ("")
+		p.callback(pkg, &ast.GenDecl{
+			Tok:   token.TYPE,
+			Specs: []ast.Spec{typeAliasSpec(name, typ)},
+		})
+
 	case typeTag:
-		_ = p.typ(aliasedPkgName{})
+		_ = p.typ("")
 
 	case varTag:
 		p.pos()
 		pkg, name := p.qualifiedName()
-		typ := p.typ(aliasedPkgName{})
-		p.callback(pkg.alias, &ast.GenDecl{
+		typ := p.typ("")
+		p.callback(pkg, &ast.GenDecl{
 			Tok: token.VAR,
 			Specs: []ast.Spec{
 				&ast.ValueSpec{
@@ -195,12 +240,13 @@ func (p *gc_bin_parser) obj(tag int) {
 				},
 			},
 		})
+
 	case funcTag:
 		p.pos()
 		pkg, name := p.qualifiedName()
 		params := p.paramList()
 		results := p.paramList()
-		p.callback(pkg.alias, &ast.FuncDecl{
+		p.callback(pkg, &ast.FuncDecl{
 			Name: ast.NewIdent(name),
 			Type: &ast.FuncType{Params: params, Results: results},
 		})
@@ -210,6 +256,8 @@ func (p *gc_bin_parser) obj(tag int) {
 	}
 }
 
+const deltaNewFile = -64 // see cmd/compile/internal/gc/bexport.go
+
 func (p *gc_bin_parser) pos() {
 	if !p.posInfoFormat {
 		return
@@ -217,27 +265,35 @@ func (p *gc_bin_parser) pos() {
 
 	file := p.prevFile
 	line := p.prevLine
-	if delta := p.int(); delta != 0 {
-		// line changed
-		line += delta
-	} else if n := p.int(); n >= 0 {
-		// file changed
-		file = p.prevFile[:n] + p.string()
-		p.prevFile = file
-		line = p.int()
+	delta := p.int()
+	line += delta
+	if p.version >= 5 {
+		if delta == deltaNewFile {
+			if n := p.int(); n >= 0 {
+				// file changed
+				file = p.path()
+				line = n
+			}
+		}
+	} else {
+		if delta == 0 {
+			if n := p.int(); n >= 0 {
+				// file changed
+				file = p.prevFile[:n] + p.string()
+				line = p.int()
+			}
+		}
 	}
+	p.prevFile = file
 	p.prevLine = line
 
 	// TODO(gri) register new position
 }
 
-func (p *gc_bin_parser) qualifiedName() (pkg aliasedPkgName, name string) {
+func (p *gc_bin_parser) qualifiedName() (pkg string, name string) {
 	name = p.string()
 	pkg = p.pkg()
-	if pkg.path == "" {
-		pkg.alias = "#" + p.pfc.defalias
-	}
-	return
+	return pkg, name
 }
 
 func (p *gc_bin_parser) reserveMaybe() int {
@@ -265,7 +321,7 @@ func (p *gc_bin_parser) record(t ast.Expr) {
 // the package currently imported. The parent package is needed for
 // exported struct fields and interface methods which don't contain
 // explicit package information in the export data.
-func (p *gc_bin_parser) typ(parent aliasedPkgName) ast.Expr {
+func (p *gc_bin_parser) typ(parent string) ast.Expr {
 	// if the type was seen before, i is its index (>= 0)
 	i := p.tagOrIndex()
 	if i >= 0 {
@@ -288,14 +344,14 @@ func (p *gc_bin_parser) typ(parent aliasedPkgName) ast.Expr {
 		}
 
 		// record it right away (underlying type can contain refs to t)
-		t := &ast.SelectorExpr{X: ast.NewIdent(parent.alias), Sel: ast.NewIdent(name)}
+		t := &ast.SelectorExpr{X: ast.NewIdent(parent), Sel: ast.NewIdent(name)}
 		p.record(t)
 
 		// parse underlying type
 		t0 := p.typ(parent)
 		tdecl.Specs[0].(*ast.TypeSpec).Type = t0
 
-		p.callback(parent.path, tdecl)
+		p.callback(parent, tdecl)
 
 		// interfaces have no methods
 		if _, ok := t0.(*ast.InterfaceType); ok {
@@ -314,13 +370,10 @@ func (p *gc_bin_parser) typ(parent aliasedPkgName) ast.Expr {
 			recv := p.paramList()
 			params := p.paramList()
 			results := p.paramList()
-
-			if p.version == "v1" {
-				p.int() // nointerface flag - discarded
-			}
+			p.int() // go:nointerface pragma - discarded
 
 			strip_method_receiver(recv)
-			p.callback(parent.path, &ast.FuncDecl{
+			p.callback(parent, &ast.FuncDecl{
 				Recv: recv,
 				Name: ast.NewIdent(name),
 				Type: &ast.FuncType{Params: params, Results: results},
@@ -363,10 +416,17 @@ func (p *gc_bin_parser) typ(parent aliasedPkgName) ast.Expr {
 
 	case interfaceTag:
 		i := p.reserveMaybe()
-		if p.int() != 0 {
-			panic("unexpected embedded interface")
+		var embeddeds []*ast.SelectorExpr
+		for n := p.int(); n > 0; n-- {
+			p.pos()
+			if named, ok := p.typ(parent).(*ast.SelectorExpr); ok {
+				embeddeds = append(embeddeds, named)
+			}
 		}
 		methods := p.methodList(parent)
+		for _, field := range embeddeds {
+			methods = append(methods, &ast.Field{Type: field})
+		}
 		return p.recordMaybe(i, &ast.InterfaceType{Methods: &ast.FieldList{List: methods}})
 
 	case mapTag:
@@ -396,22 +456,22 @@ func (p *gc_bin_parser) typ(parent aliasedPkgName) ast.Expr {
 	}
 }
 
-func (p *gc_bin_parser) structType(parent aliasedPkgName) *ast.StructType {
+func (p *gc_bin_parser) structType(parent string) *ast.StructType {
 	var fields []*ast.Field
 	if n := p.int(); n > 0 {
 		fields = make([]*ast.Field, n)
 		for i := range fields {
-			fields[i] = p.field(parent)
-			p.string() // tag, not interested in tags
+			fields[i], _ = p.field(parent) // (*ast.Field, tag), not interested in tags
 		}
 	}
 	return &ast.StructType{Fields: &ast.FieldList{List: fields}}
 }
 
-func (p *gc_bin_parser) field(parent aliasedPkgName) *ast.Field {
+func (p *gc_bin_parser) field(parent string) (*ast.Field, string) {
 	p.pos()
-	_, name := p.fieldName(parent)
+	_, name, _ := p.fieldName(parent)
 	typ := p.typ(parent)
+	tag := p.string()
 
 	var names []*ast.Ident
 	if name != "" {
@@ -420,10 +480,10 @@ func (p *gc_bin_parser) field(parent aliasedPkgName) *ast.Field {
 	return &ast.Field{
 		Names: names,
 		Type:  typ,
-	}
+	}, tag
 }
 
-func (p *gc_bin_parser) methodList(parent aliasedPkgName) (methods []*ast.Field) {
+func (p *gc_bin_parser) methodList(parent string) (methods []*ast.Field) {
 	if n := p.int(); n > 0 {
 		methods = make([]*ast.Field, n)
 		for i := range methods {
@@ -433,9 +493,9 @@ func (p *gc_bin_parser) methodList(parent aliasedPkgName) (methods []*ast.Field)
 	return
 }
 
-func (p *gc_bin_parser) method(parent aliasedPkgName) *ast.Field {
+func (p *gc_bin_parser) method(parent string) *ast.Field {
 	p.pos()
-	_, name := p.fieldName(parent)
+	_, name, _ := p.fieldName(parent)
 	params := p.paramList()
 	results := p.paramList()
 	return &ast.Field{
@@ -444,20 +504,32 @@ func (p *gc_bin_parser) method(parent aliasedPkgName) *ast.Field {
 	}
 }
 
-func (p *gc_bin_parser) fieldName(parent aliasedPkgName) (aliasedPkgName, string) {
-	pkg := parent
+func (p *gc_bin_parser) fieldName(parent string) (string, string, bool) {
 	name := p.string()
-	if name == "" {
-		return pkg, "" // anonymous
+	pkg := parent
+	if p.version == 0 && name == "_" {
+		// version 0 didn't export a package for _ fields
+		return pkg, name, false
 	}
-	if name == "?" || name != "_" && !exported(name) {
-		// explicitly qualified field
-		if name == "?" {
-			name = "" // anonymous
-		}
+	var alias bool
+	switch name {
+	case "":
+		// 1) field name matches base type name and is exported: nothing to do
+	case "?":
+		// 2) field name matches base type name and is not exported: need package
+		name = ""
 		pkg = p.pkg()
+	case "@":
+		// 3) field name doesn't match type name (alias)
+		name = p.string()
+		alias = true
+		fallthrough
+	default:
+		if !exported(name) {
+			pkg = p.pkg()
+		}
 	}
-	return pkg, name
+	return pkg, name, alias
 }
 
 func (p *gc_bin_parser) paramList() *ast.FieldList {
@@ -480,7 +552,7 @@ func (p *gc_bin_parser) paramList() *ast.FieldList {
 }
 
 func (p *gc_bin_parser) param(named bool) *ast.Field {
-	t := p.typ(aliasedPkgName{})
+	t := p.typ("")
 
 	name := "?"
 	if named {
@@ -564,6 +636,26 @@ func (p *gc_bin_parser) int64() int64 {
 	return p.rawInt64()
 }
 
+func (p *gc_bin_parser) path() string {
+	if p.debugFormat {
+		p.marker('p')
+	}
+	// if the path was seen before, i is its index (>= 0)
+	// (the empty string is at index 0)
+	i := p.rawInt64()
+	if i >= 0 {
+		return p.pathList[i]
+	}
+	// otherwise, i is the negative path length (< 0)
+	a := make([]string, -i)
+	for n := range a {
+		a[n] = p.string()
+	}
+	s := strings.Join(a, "/")
+	p.pathList = append(p.pathList, s)
+	return s
+}
+
 func (p *gc_bin_parser) string() string {
 	if p.debugFormat {
 		p.marker('s')
@@ -599,13 +691,23 @@ func (p *gc_bin_parser) marker(want byte) {
 	}
 }
 
-// rawInt64 should only be used by low-level decoders
+// rawInt64 should only be used by low-level decoders.
 func (p *gc_bin_parser) rawInt64() int64 {
 	i, err := binary.ReadVarint(p)
 	if err != nil {
 		panic(fmt.Sprintf("read error: %v", err))
 	}
 	return i
+}
+
+// rawStringln should only be used to read the initial version string.
+func (p *gc_bin_parser) rawStringln(b byte) string {
+	p.buf = p.buf[:0]
+	for b != '\n' {
+		p.buf = append(p.buf, b)
+		b = p.rawByte()
+	}
+	return string(p.buf)
 }
 
 // needed for binary.ReadVarint in rawInt64
@@ -670,7 +772,11 @@ const (
 	fractionTag // not used by gc
 	complexTag
 	stringTag
+	nilTag     // only used by gc (appears in exported inlined function bodies)
 	unknownTag // not used by gc (only appears in packages with errors)
+
+	// Type aliases
+	aliasTag
 )
 
 var predeclared = []ast.Expr{
@@ -693,7 +799,7 @@ var predeclared = []ast.Expr{
 	ast.NewIdent("complex128"),
 	ast.NewIdent("string"),
 
-	// aliases
+	// basic type aliases
 	ast.NewIdent("byte"),
 	ast.NewIdent("rune"),
 

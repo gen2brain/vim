@@ -21,17 +21,17 @@ from __future__ import absolute_import
 from __future__ import unicode_literals
 from __future__ import print_function
 from __future__ import division
-from future import standard_library
-standard_library.install_aliases()
+# Not installing aliases from python-future; it's unreliable and slow.
 from builtins import *  # noqa
 
-from hamcrest import ( assert_that, calling, empty, greater_than, has_item,
-                       has_items, has_entries, raises )
+from hamcrest import ( assert_that, calling, contains_string, empty,
+                       greater_than, has_item, has_items, has_entries, raises )
 from nose.tools import eq_
 from webtest import AppError
 
 from ycmd.tests.cs import PathToTestFile, SharedYcmd, WrapOmniSharpServer
-from ycmd.tests.test_utils import BuildRequest, CompletionEntryMatcher
+from ycmd.tests.test_utils import ( BuildRequest, CompletionEntryMatcher,
+                                    ExpectedFailure )
 from ycmd.utils import ReadFile
 
 
@@ -53,6 +53,11 @@ def GetCompletions_Basic_test( app ):
     eq_( 12, response_data[ 'completion_start_column' ] )
 
 
+@ExpectedFailure( 'Filtering and sorting does not support candidates with '
+                  'non-ASCII characters.',
+                  contains_string( "but: a sequence containing a dictionary "
+                                   "containing {'insertion_text': 'a_unicøde'} "
+                                   "was" ) )
 @SharedYcmd
 def GetCompletions_Unicode_test( app ):
   filepath = PathToTestFile( 'testy', 'Unicode.cs' )

@@ -21,8 +21,7 @@ from __future__ import absolute_import
 from __future__ import unicode_literals
 from __future__ import print_function
 from __future__ import division
-from future import standard_library
-standard_library.install_aliases()
+# Not installing aliases from python-future; it's unreliable and slow.
 from builtins import *  # noqa
 
 from hamcrest import ( assert_that, calling, contains, contains_string,
@@ -40,6 +39,25 @@ from ycmd.tests.test_utils import ( BuildRequest,
                                     ChunkMatcher,
                                     LineColMatcher )
 from ycmd.utils import ReadFile
+
+
+@SharedYcmd
+def Subcommands_DefinedSubcommands_test( app ):
+  subcommands_data = BuildRequest( completer_target = 'cpp' )
+  eq_( sorted( [ 'ClearCompilationFlagCache',
+                 'FixIt',
+                 'GetDoc',
+                 'GetDocImprecise',
+                 'GetParent',
+                 'GetType',
+                 'GetTypeImprecise',
+                 'GoTo',
+                 'GoToDeclaration',
+                 'GoToDefinition',
+                 'GoToImprecise',
+                 'GoToInclude' ] ),
+       app.post_json( '/defined_subcommands',
+                      subcommands_data ).json )
 
 
 @SharedYcmd
@@ -326,7 +344,7 @@ def Subcommands_GetType_test():
     # On Ns:: (Unknown)
     [{'line_num': 21, 'column_num':  3}, 'Unknown type'], # sic
     # On Type (Type)
-    [{'line_num': 21, 'column_num':  8}, 'Type => Ns::BasicType<char>'], # sic
+    [{'line_num': 21, 'column_num':  8}, 'Ns::Type => Ns::BasicType<char>'],
     # On "a" (Ns::Type)
     [{'line_num': 21, 'column_num': 15}, 'Ns::Type => Ns::BasicType<char>'],
     [{'line_num': 22, 'column_num': 13}, 'Ns::Type => Ns::BasicType<char>'],
@@ -353,26 +371,26 @@ def Subcommands_GetType_test():
     [{'line_num': 44, 'column_num': 12}, 'Foo *'],
     [{'line_num': 44, 'column_num': 18}, 'int'],
 
-    # Auto in declaration (canonical types apparently differ)
-    [{'line_num': 24, 'column_num':  3}, 'Foo & => Foo &'], # sic
-    [{'line_num': 24, 'column_num': 11}, 'Foo & => Foo &'], # sic
+    # Auto in declaration
+    [{'line_num': 24, 'column_num':  3}, 'Foo &'],
+    [{'line_num': 24, 'column_num': 11}, 'Foo &'],
     [{'line_num': 24, 'column_num': 18}, 'Foo'],
-    [{'line_num': 25, 'column_num':  3}, 'Foo * => Foo *'], # sic
-    [{'line_num': 25, 'column_num': 11}, 'Foo * => Foo *'], # sic
+    [{'line_num': 25, 'column_num':  3}, 'Foo *'],
+    [{'line_num': 25, 'column_num': 11}, 'Foo *'],
     [{'line_num': 25, 'column_num': 18}, 'Foo'],
-    [{'line_num': 27, 'column_num':  3}, 'const Foo & => const Foo &'], # sic
-    [{'line_num': 27, 'column_num': 16}, 'const Foo & => const Foo &'], # sic
-    [{'line_num': 28, 'column_num':  3}, 'const Foo * => const Foo *'], # sic
-    [{'line_num': 28, 'column_num': 16}, 'const Foo * => const Foo *'], # sic
+    [{'line_num': 27, 'column_num':  3}, 'const Foo &'],
+    [{'line_num': 27, 'column_num': 16}, 'const Foo &'],
+    [{'line_num': 28, 'column_num':  3}, 'const Foo *'],
+    [{'line_num': 28, 'column_num': 16}, 'const Foo *'],
 
-    # Auto in usage (canonical types apparently differ)
-    [{'line_num': 30, 'column_num': 14}, 'const Foo => const Foo'], # sic
+    # Auto in usage
+    [{'line_num': 30, 'column_num': 14}, 'const Foo'],
     [{'line_num': 30, 'column_num': 21}, 'const int'],
-    [{'line_num': 31, 'column_num': 14}, 'const Foo * => const Foo *'], # sic
+    [{'line_num': 31, 'column_num': 14}, 'const Foo *'],
     [{'line_num': 31, 'column_num': 22}, 'const int'],
-    [{'line_num': 32, 'column_num': 13}, 'Foo => Foo'], # sic
+    [{'line_num': 32, 'column_num': 13}, 'Foo'],
     [{'line_num': 32, 'column_num': 19}, 'int'],
-    [{'line_num': 33, 'column_num': 13}, 'Foo * => Foo *'], # sic
+    [{'line_num': 33, 'column_num': 13}, 'Foo *'],
     [{'line_num': 33, 'column_num': 20}, 'int'],
 
     # Unicode
@@ -384,6 +402,14 @@ def Subcommands_GetType_test():
             'GetType_Clang_test.cc',
             test,
             [ 'GetType' ] )
+
+  # For every practical scenario, GetTypeImprecise is the same as GetType (it
+  # just skips the reparse)
+  for test in tests:
+    yield ( RunGetSemanticTest,
+            'GetType_Clang_test.cc',
+            test,
+            [ 'GetTypeImprecise' ] )
 
 
 def Subcommands_GetParent_test():
@@ -933,7 +959,7 @@ def Subcommands_GetDoc_NoCursor_test( app ):
 
 # Following tests repeat the tests above, but without re-parsing the file
 @SharedYcmd
-def Subcommands_GetDocQuick_Variable_test( app ):
+def Subcommands_GetDocImprecise_Variable_test( app ):
   filepath = PathToTestFile( 'GetDoc_Clang.cc' )
   contents = ReadFile( filepath )
 
@@ -950,7 +976,7 @@ def Subcommands_GetDocQuick_Variable_test( app ):
                              line_num = 70,
                              column_num = 24,
                              contents = contents,
-                             command_arguments = [ 'GetDocQuick' ],
+                             command_arguments = [ 'GetDocImprecise' ],
                              completer_target = 'filetype_default' )
 
   response = app.post_json( '/run_completer_command', event_data ).json
@@ -970,7 +996,7 @@ The first line of comment is the brief.""" } )
 
 
 @SharedYcmd
-def Subcommands_GetDocQuick_Method_test( app ):
+def Subcommands_GetDocImprecise_Method_test( app ):
   filepath = PathToTestFile( 'GetDoc_Clang.cc' )
   contents = ReadFile( filepath )
 
@@ -989,7 +1015,7 @@ def Subcommands_GetDocQuick_Method_test( app ):
                              line_num = 22,
                              column_num = 13,
                              contents = contents,
-                             command_arguments = [ 'GetDocQuick' ],
+                             command_arguments = [ 'GetDocImprecise' ],
                              completer_target = 'filetype_default' )
 
   response = app.post_json( '/run_completer_command', event_data ).json
@@ -1013,7 +1039,7 @@ This is more information
 
 
 @SharedYcmd
-def Subcommands_GetDocQuick_Namespace_test( app ):
+def Subcommands_GetDocImprecise_Namespace_test( app ):
   filepath = PathToTestFile( 'GetDoc_Clang.cc' )
   contents = ReadFile( filepath )
 
@@ -1032,7 +1058,7 @@ def Subcommands_GetDocQuick_Namespace_test( app ):
                              line_num = 65,
                              column_num = 14,
                              contents = contents,
-                             command_arguments = [ 'GetDocQuick' ],
+                             command_arguments = [ 'GetDocImprecise' ],
                              completer_target = 'filetype_default' )
 
   response = app.post_json( '/run_completer_command', event_data ).json
@@ -1050,7 +1076,7 @@ This is a test namespace""" } ) # noqa
 
 
 @SharedYcmd
-def Subcommands_GetDocQuick_Undocumented_test( app ):
+def Subcommands_GetDocImprecise_Undocumented_test( app ):
   filepath = PathToTestFile( 'GetDoc_Clang.cc' )
   contents = ReadFile( filepath )
 
@@ -1069,7 +1095,7 @@ def Subcommands_GetDocQuick_Undocumented_test( app ):
                              line_num = 81,
                              column_num = 17,
                              contents = contents,
-                             command_arguments = [ 'GetDocQuick' ],
+                             command_arguments = [ 'GetDocImprecise' ],
                              completer_target = 'filetype_default' )
 
   response = app.post_json( '/run_completer_command',
@@ -1083,7 +1109,7 @@ def Subcommands_GetDocQuick_Undocumented_test( app ):
 
 
 @SharedYcmd
-def Subcommands_GetDocQuick_NoCursor_test( app ):
+def Subcommands_GetDocImprecise_NoCursor_test( app ):
   filepath = PathToTestFile( 'GetDoc_Clang.cc' )
   contents = ReadFile( filepath )
 
@@ -1102,7 +1128,7 @@ def Subcommands_GetDocQuick_NoCursor_test( app ):
                              line_num = 1,
                              column_num = 1,
                              contents = contents,
-                             command_arguments = [ 'GetDocQuick' ],
+                             command_arguments = [ 'GetDocImprecise' ],
                              completer_target = 'filetype_default' )
 
   response = app.post_json( '/run_completer_command',
@@ -1116,7 +1142,7 @@ def Subcommands_GetDocQuick_NoCursor_test( app ):
 
 
 @SharedYcmd
-def Subcommands_GetDocQuick_NoReadyToParse_test( app ):
+def Subcommands_GetDocImprecise_NoReadyToParse_test( app ):
   filepath = PathToTestFile( 'GetDoc_Clang.cc' )
   contents = ReadFile( filepath )
 
@@ -1126,7 +1152,7 @@ def Subcommands_GetDocQuick_NoReadyToParse_test( app ):
                              line_num = 11,
                              column_num = 18,
                              contents = contents,
-                             command_arguments = [ 'GetDocQuick' ],
+                             command_arguments = [ 'GetDocImprecise' ],
                              completer_target = 'filetype_default' )
 
   response = app.post_json( '/run_completer_command', event_data ).json

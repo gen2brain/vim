@@ -19,8 +19,7 @@ from __future__ import unicode_literals
 from __future__ import print_function
 from __future__ import division
 from __future__ import absolute_import
-from future import standard_library
-standard_library.install_aliases()
+# Not installing aliases from python-future; it's unreliable and slow.
 from builtins import *  # noqa
 
 import os
@@ -54,9 +53,9 @@ class IdentifierCompleter( GeneralCompleter ):
 
     completions = self._completer.CandidatesForQueryAndType(
       ToCppStringCompatible( _SanitizeQuery( request_data[ 'query' ] ) ),
-      ToCppStringCompatible( request_data[ 'filetypes' ][ 0 ] ) )
+      ToCppStringCompatible( request_data[ 'first_filetype' ] ),
+      self._max_candidates )
 
-    completions = completions[ : self._max_candidates ]
     completions = _RemoveSmallCandidates(
       completions, self.user_options[ 'min_num_identifier_candidate_chars' ] )
 
@@ -68,11 +67,8 @@ class IdentifierCompleter( GeneralCompleter ):
     return [ ConvertCompletionData( x ) for x in completions ]
 
 
-  def AddIdentifier( self, identifier, request_data ):
-    try:
-      filetype = request_data[ 'filetypes' ][ 0 ]
-    except KeyError:
-      filetype = None
+  def _AddIdentifier( self, identifier, request_data ):
+    filetype = request_data[ 'first_filetype' ]
     filepath = request_data[ 'filepath' ]
 
     if not filetype or not filepath or not identifier:
@@ -87,34 +83,32 @@ class IdentifierCompleter( GeneralCompleter ):
       ToCppStringCompatible( filepath ) )
 
 
-  def AddPreviousIdentifier( self, request_data ):
-    self.AddIdentifier(
+  def _AddPreviousIdentifier( self, request_data ):
+    self._AddIdentifier(
       _PreviousIdentifier(
         self.user_options[ 'min_num_of_chars_for_completion' ],
+        self.user_options[ 'collect_identifiers_from_comments_and_strings' ],
         request_data ),
       request_data )
 
 
-  def AddIdentifierUnderCursor( self, request_data ):
-    cursor_identifier = _GetCursorIdentifier( request_data )
-    if not cursor_identifier:
-      return
+  def _AddIdentifierUnderCursor( self, request_data ):
+    self._AddIdentifier(
+      _GetCursorIdentifier(
+        self.user_options[ 'collect_identifiers_from_comments_and_strings' ],
+        request_data ),
+      request_data )
 
-    self.AddIdentifier( cursor_identifier, request_data )
 
-
-  def AddBufferIdentifiers( self, request_data ):
-    try:
-      filetype = request_data[ 'filetypes' ][ 0 ]
-    except KeyError:
-      filetype = None
+  def _AddBufferIdentifiers( self, request_data ):
+    filetype = request_data[ 'first_filetype' ]
     filepath = request_data[ 'filepath' ]
-    collect_from_comments_and_strings = bool( self.user_options[
-      'collect_identifiers_from_comments_and_strings' ] )
 
     if not filetype or not filepath:
       return
 
+    collect_from_comments_and_strings = bool( self.user_options[
+      'collect_identifiers_from_comments_and_strings' ] )
     text = request_data[ 'file_data' ][ filepath ][ 'contents' ]
     self._logger.info( 'Adding buffer identifiers for file: %s', filepath )
     self._completer.ClearForFileAndAddIdentifiersToDatabase(
@@ -125,8 +119,7 @@ class IdentifierCompleter( GeneralCompleter ):
         ToCppStringCompatible( filepath ) )
 
 
-  def AddIdentifiersFromTagFiles( self, tag_files ):
-    absolute_paths_to_tag_files = ycm_core.StringVector()
+  def _FilterUnchangedTagFiles( self, tag_files ):
     for tag_file in tag_files:
       try:
         current_mtime = os.path.getmtime( tag_file )
@@ -140,6 +133,12 @@ class IdentifierCompleter( GeneralCompleter ):
         continue
 
       self._tags_file_last_mtime[ tag_file ] = current_mtime
+      yield tag_file
+
+
+  def _AddIdentifiersFromTagFiles( self, tag_files ):
+    absolute_paths_to_tag_files = ycm_core.StringVector()
+    for tag_file in self._FilterUnchangedTagFiles( tag_files ):
       absolute_paths_to_tag_files.append( ToCppStringCompatible( tag_file ) )
 
     if not absolute_paths_to_tag_files:
@@ -149,39 +148,41 @@ class IdentifierCompleter( GeneralCompleter ):
       absolute_paths_to_tag_files )
 
 
-  def AddIdentifiersFromSyntax( self, keyword_list, filetypes ):
+  def _AddIdentifiersFromSyntax( self, keyword_list, filetype ):
     keyword_vector = ycm_core.StringVector()
     for keyword in keyword_list:
       keyword_vector.append( ToCppStringCompatible( keyword ) )
 
-    filepath = SYNTAX_FILENAME + filetypes[ 0 ]
+    filepath = SYNTAX_FILENAME + filetype
     self._completer.AddIdentifiersToDatabase(
       keyword_vector,
-      ToCppStringCompatible( filetypes[ 0 ] ),
+      ToCppStringCompatible( filetype ),
       ToCppStringCompatible( filepath ) )
 
 
   def OnFileReadyToParse( self, request_data ):
-    self.AddBufferIdentifiers( request_data )
+    self._AddBufferIdentifiers( request_data )
     if 'tag_files' in request_data:
-      self.AddIdentifiersFromTagFiles( request_data[ 'tag_files' ] )
+      self._AddIdentifiersFromTagFiles( request_data[ 'tag_files' ] )
     if 'syntax_keywords' in request_data:
-      self.AddIdentifiersFromSyntax( request_data[ 'syntax_keywords' ],
-                                     request_data[ 'filetypes' ] )
+      self._AddIdentifiersFromSyntax( request_data[ 'syntax_keywords' ],
+                                     request_data[ 'first_filetype' ] )
 
 
   def OnInsertLeave( self, request_data ):
-    self.AddIdentifierUnderCursor( request_data )
+    self._AddIdentifierUnderCursor( request_data )
 
 
   def OnCurrentIdentifierFinished( self, request_data ):
-    self.AddPreviousIdentifier( request_data )
+    self._AddPreviousIdentifier( request_data )
 
 
 # This looks for the previous identifier and returns it; this might mean looking
 # at last identifier on the previous line if a new line has just been created.
-def _PreviousIdentifier( min_num_candidate_size_chars, request_data ):
-  def PreviousIdentifierOnLine( line, column ):
+def _PreviousIdentifier( min_num_candidate_size_chars,
+                         collect_from_comments_and_strings,
+                         request_data ):
+  def PreviousIdentifierOnLine( line, column, filetype ):
     nearest_ident = ''
     for match in identifier_utils.IdentifierRegexForFiletype(
         filetype ).finditer( line ):
@@ -192,22 +193,28 @@ def _PreviousIdentifier( min_num_candidate_size_chars, request_data ):
   line_num = request_data[ 'line_num' ] - 1
   column_num = request_data[ 'column_codepoint' ] - 1
   filepath = request_data[ 'filepath' ]
-  try:
-    filetype = request_data[ 'filetypes' ][ 0 ]
-  except KeyError:
-    filetype = None
+  filetype = request_data[ 'first_filetype' ]
 
-  contents_per_line = (
-    SplitLines( request_data[ 'file_data' ][ filepath ][ 'contents' ] ) )
+  contents = request_data[ 'file_data' ][ filepath ][ 'contents' ]
+  if not collect_from_comments_and_strings:
+    contents = identifier_utils.RemoveIdentifierFreeText( contents, filetype )
+  contents_per_line = SplitLines( contents )
 
-  ident = PreviousIdentifierOnLine( contents_per_line[ line_num ], column_num )
+  ident = PreviousIdentifierOnLine( contents_per_line[ line_num ],
+                                    column_num,
+                                    filetype )
   if ident:
     if len( ident ) < min_num_candidate_size_chars:
       return ''
     return ident
 
-  prev_line = contents_per_line[ line_num - 1 ]
-  ident = PreviousIdentifierOnLine( prev_line, len( prev_line ) )
+  line_num = line_num - 1
+
+  if line_num < 0:
+    return ''
+
+  prev_line = contents_per_line[ line_num ]
+  ident = PreviousIdentifierOnLine( prev_line, len( prev_line ), filetype )
   if len( ident ) < min_num_candidate_size_chars:
     return ''
   return ident
@@ -220,13 +227,17 @@ def _RemoveSmallCandidates( candidates, min_num_candidate_size_chars ):
   return [ x for x in candidates if len( x ) >= min_num_candidate_size_chars ]
 
 
-def _GetCursorIdentifier( request_data ):
-  try:
-    filetype = request_data[ 'filetypes' ][ 0 ]
-  except KeyError:
-    filetype = None
+def _GetCursorIdentifier( collect_from_comments_and_strings,
+                          request_data ):
+  filepath = request_data[ 'filepath' ]
+  contents = request_data[ 'file_data' ][ filepath ][ 'contents' ]
+  filetype = request_data[ 'first_filetype' ]
+  if not collect_from_comments_and_strings:
+    contents = identifier_utils.RemoveIdentifierFreeText( contents, filetype )
+  contents_per_line = SplitLines( contents )
+  line = contents_per_line[ request_data[ 'line_num' ] - 1 ]
   return identifier_utils.IdentifierAtIndex(
-      request_data[ 'line_value' ],
+      line,
       request_data[ 'column_codepoint' ] - 1,
       filetype )
 
@@ -235,7 +246,7 @@ def _IdentifiersFromBuffer( text,
                             filetype,
                             collect_from_comments_and_strings ):
   if not collect_from_comments_and_strings:
-    text = identifier_utils.RemoveIdentifierFreeText( text )
+    text = identifier_utils.RemoveIdentifierFreeText( text, filetype )
   idents = identifier_utils.ExtractIdentifiersFromText( text, filetype )
   vector = ycm_core.StringVector()
   for ident in idents:

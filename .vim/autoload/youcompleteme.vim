@@ -21,36 +21,53 @@ set cpo&vim
 
 " This needs to be called outside of a function
 let s:script_folder_path = escape( expand( '<sfile>:p:h' ), '\' )
-let s:omnifunc_mode = 0
-let s:defer_omnifunc = 1
-
-let s:old_cursor_position = []
-let s:cursor_moved = 0
-let s:moved_vertically_in_insert_mode = 0
-let s:previous_num_chars_on_current_line = strlen( getline('.') )
+let s:force_semantic = 0
+let s:completion_stopped = 0
+let s:default_completion = {
+      \   'start_column': -1,
+      \   'candidates': []
+      \ }
+let s:completion = s:default_completion
 let s:previous_allowed_buffer_number = 0
+let s:pollers = {
+      \   'completion': {
+      \     'id': -1,
+      \     'wait_milliseconds': 10
+      \   },
+      \   'file_parse_response': {
+      \     'id': -1,
+      \     'wait_milliseconds': 100
+      \   },
+      \   'server_ready': {
+      \     'id': -1,
+      \     'wait_milliseconds': 100
+      \   }
+      \ }
 
 
-function! s:UsingPython2()
-  " I'm willing to bet quite a bit that sooner or later, somebody will ask us to
-  " make it configurable which version of Python we use.
-  if has('python')
+" When both versions are available, we prefer Python 3 over Python 2:
+"  - faster startup (no monkey-patching from python-future);
+"  - better Windows support (e.g. temporary paths are not returned in all
+"    lowercase);
+"  - Python 2 support will eventually be dropped.
+function! s:UsingPython3()
+  if has('python3')
     return 1
   endif
   return 0
 endfunction
 
 
-let s:using_python2 = s:UsingPython2()
-let s:python_until_eof = s:using_python2 ? "python << EOF" : "python3 << EOF"
-let s:python_command = s:using_python2 ? "py " : "py3 "
+let s:using_python3 = s:UsingPython3()
+let s:python_until_eof = s:using_python3 ? "python3 << EOF" : "python << EOF"
+let s:python_command = s:using_python3 ? "py3 " : "py "
 
 
 function! s:Pyeval( eval_string )
-  if s:using_python2
-    return pyeval( a:eval_string )
+  if s:using_python3
+    return py3eval( a:eval_string )
   endif
-  return py3eval( a:eval_string )
+  return pyeval( a:eval_string )
 endfunction
 
 
@@ -75,67 +92,49 @@ function! youcompleteme#Enable()
   call s:SetUpSigns()
   call s:SetUpSyntaxHighlighting()
 
-  if g:ycm_allow_changing_updatetime && &updatetime > 2000
-    set ut=2000
-  endif
-
   call youcompleteme#EnableCursorMovedAutocommands()
   augroup youcompleteme
     autocmd!
     " Note that these events will NOT trigger for the file vim is started with;
     " so if you do "vim foo.cc", these events will not trigger when that buffer
     " is read. This is because youcompleteme#Enable() is called on VimEnter and
-    " that happens *after" BufRead/BufEnter has already triggered for the
-    " initial file.
-    " We also need to trigger buf init code on the FileType event because when
-    " the user does :enew and then :set ft=something, we need to run buf init
-    " code again.
-    autocmd BufReadPre * call s:OnBufferReadPre( expand( '<afile>:p' ) )
-    autocmd BufRead,FileType * call s:OnBufferRead()
+    " that happens *after* FileType has already triggered for the initial file.
+    " We don't parse the buffer on the BufRead event since it would only be
+    " useful if the buffer filetype is set (we ignore the buffer if there is no
+    " filetype) and if so, the FileType event has triggered before and thus the
+    " buffer is already parsed.
+    autocmd FileType * call s:OnFileTypeSet()
     autocmd BufEnter * call s:OnBufferEnter()
-    autocmd BufUnload * call s:OnBufferUnload( expand( '<afile>:p' ) )
-    autocmd CursorHold,CursorHoldI * call s:OnCursorHold()
+    autocmd BufUnload * call s:OnBufferUnload()
     autocmd InsertLeave * call s:OnInsertLeave()
-    autocmd InsertEnter * call s:OnInsertEnter()
     autocmd VimLeave * call s:OnVimLeave()
     autocmd CompleteDone * call s:OnCompleteDone()
   augroup END
 
-  " Setting the omnifunc require us to ask the server if it has a Native
-  " Semantic Completer for the current buffer's filetype. When vim first start
-  " this mean that we have to wait for the server to be up and running which
-  " would block vim's GUI. To avoid this we defer setting the omnifunc the
-  " first time to when we enter Insert mode and then update it on every
-  " BufferVisit as normal.
-  if s:defer_omnifunc
-    augroup ycm_defer_omnifunc
-      autocmd!
-      autocmd InsertEnter * call s:SetOmnicompleteFunc()
-                        \ | let s:defer_omnifunc = 0
-                        \ | autocmd! ycm_defer_omnifunc
-    augroup END
-  endif
-
-  " Calling these once solves the problem of BufReadPre/BufRead/BufEnter not
-  " triggering for the first loaded file. This should be the last commands
-  " executed in this function!
-  call s:OnBufferReadPre( expand( '<afile>:p' ) )
-  call s:OnBufferRead()
+  " The FileType event is not triggered for the first loaded file. We wait until
+  " the server is ready to manually run the s:OnFileTypeSet function.
+  let s:pollers.server_ready.id = timer_start(
+        \ s:pollers.server_ready.wait_milliseconds,
+        \ function( 's:PollServerReady' ) )
 endfunction
 
 
 function! youcompleteme#EnableCursorMovedAutocommands()
-    augroup ycmcompletemecursormove
-        autocmd!
-        autocmd CursorMovedI * call s:OnCursorMovedInsertMode()
-        autocmd CursorMoved * call s:OnCursorMovedNormalMode()
-    augroup END
+  augroup ycmcompletemecursormove
+    autocmd!
+    autocmd CursorMoved * call s:OnCursorMovedNormalMode()
+    autocmd TextChanged * call s:OnTextChangedNormalMode()
+    autocmd TextChangedI * call s:OnTextChangedInsertMode()
+    " The TextChangedI event is not triggered when inserting a character while
+    " the completion menu is open. We handle this by closing the completion menu
+    " just before inserting a character.
+    autocmd InsertCharPre * call s:OnInsertChar()
+  augroup END
 endfunction
 
 
 function! youcompleteme#DisableCursorMovedAutocommands()
-    autocmd! ycmcompletemecursormove CursorMoved *
-    autocmd! ycmcompletemecursormove CursorMovedI *
+  autocmd! ycmcompletemecursormove
 endfunction
 
 
@@ -217,11 +216,17 @@ function! s:SetUpKeyMappings()
           \ ' pumvisible() ? "\<C-n>" : "\' . key .'"'
   endfor
 
-
   for key in g:ycm_key_list_previous_completion
     " This selects the previous candidate for shift-tab (default)
     exe 'inoremap <expr>' . key .
           \ ' pumvisible() ? "\<C-p>" : "\' . key .'"'
+  endfor
+
+  for key in g:ycm_key_list_stop_completion
+    " When selecting a candidate and closing the completion menu with the <C-y>
+    " key, the menu will automatically be reopened because of the TextChangedI
+    " event. We define a command to prevent that.
+    exe 'inoremap <expr>' . key . ' <SID>StopCompletion( "\' . key . '" )'
   endfor
 
   if !empty( g:ycm_key_invoke_completion )
@@ -232,15 +237,22 @@ function! s:SetUpKeyMappings()
       imap <Nul> <C-Space>
     endif
 
-    " <c-x><c-o> trigger omni completion, <c-p> deselects the first completion
-    " candidate that vim selects by default
-    silent! exe 'inoremap <unique> ' . invoke_key .  ' <C-X><C-O><C-P>'
+    silent! exe 'inoremap <unique> <silent> ' . invoke_key .
+          \ ' <C-R>=<SID>InvokeSemanticCompletion()<CR>'
   endif
 
   if !empty( g:ycm_key_detailed_diagnostics )
     silent! exe 'nnoremap <unique> ' . g:ycm_key_detailed_diagnostics .
-          \ ' :YcmShowDetailedDiagnostic<cr>'
+          \ ' :YcmShowDetailedDiagnostic<CR>'
   endif
+
+  " The TextChangedI event is not triggered when deleting a character while the
+  " completion menu is open. We handle this by closing the completion menu on
+  " the keys that delete a character in insert mode.
+  for key in [ "<BS>", "<C-h>" ]
+    silent! exe 'inoremap <unique> <expr> ' . key .
+          \ ' <SID>OnDeleteChar( "\' . key . '" )'
+  endfor
 endfunction
 
 
@@ -326,48 +338,59 @@ function! s:TurnOffSyntasticForCFamily()
 endfunction
 
 
-function! s:AllowedToCompleteInCurrentBuffer()
-  if empty( &filetype ) ||
-        \ getbufvar( winbufnr( winnr() ), "&buftype" ) ==# 'nofile' ||
-        \ &filetype ==# 'qf'
+function! s:DisableOnLargeFile( buffer )
+  if exists( 'b:ycm_largefile' )
+    return b:ycm_largefile
+  endif
+
+  let threshold = g:ycm_disable_for_files_larger_than_kb * 1024
+  let b:ycm_largefile =
+        \ threshold > 0 && getfsize( expand( a:buffer ) ) > threshold
+  if b:ycm_largefile
+    exec s:python_command "vimsupport.PostVimMessage(" .
+          \ "'YouCompleteMe is disabled in this buffer; " .
+          \ "the file exceeded the max size (see YCM options).' )"
+  endif
+  return b:ycm_largefile
+endfunction
+
+
+function! s:AllowedToCompleteInBuffer( buffer )
+  let buffer_filetype = getbufvar( a:buffer, '&filetype' )
+
+  if empty( buffer_filetype ) ||
+        \ getbufvar( a:buffer, '&buftype' ) ==# 'nofile' ||
+        \ buffer_filetype ==# 'qf'
     return 0
   endif
 
-  if exists( 'b:ycm_largefile' )
+  if s:DisableOnLargeFile( a:buffer )
     return 0
   endif
 
   let whitelist_allows = has_key( g:ycm_filetype_whitelist, '*' ) ||
-        \ has_key( g:ycm_filetype_whitelist, &filetype )
-  let blacklist_allows = !has_key( g:ycm_filetype_blacklist, &filetype )
+        \ has_key( g:ycm_filetype_whitelist, buffer_filetype )
+  let blacklist_allows = !has_key( g:ycm_filetype_blacklist, buffer_filetype )
 
-  return whitelist_allows && blacklist_allows
+  let allowed = whitelist_allows && blacklist_allows
+  if allowed
+    let s:previous_allowed_buffer_number = bufnr( a:buffer )
+  endif
+  return allowed
+endfunction
+
+
+function! s:AllowedToCompleteInCurrentBuffer()
+  return s:AllowedToCompleteInBuffer( '%' )
 endfunction
 
 
 function! s:VisitedBufferRequiresReparse()
-  if !s:AllowedToCompleteInCurrentBuffer()
+  if bufnr( '%' ) ==# s:previous_allowed_buffer_number
     return 0
   endif
 
-  if bufnr( '' ) ==# s:previous_allowed_buffer_number
-    return 0
-  endif
-  let s:previous_allowed_buffer_number = bufnr( '' )
-  return 1
-endfunction
-
-
-function! s:SetUpCommands()
-  command! YcmRestartServer call s:RestartServer()
-  command! YcmShowDetailedDiagnostic call s:ShowDetailedDiagnostic()
-  command! YcmDebugInfo call s:DebugInfo()
-  command! -nargs=? -complete=custom,youcompleteme#LogsComplete
-    \ YcmToggleLogs call s:ToggleLogs(<f-args>)
-  command! -nargs=* -complete=custom,youcompleteme#SubCommandsComplete
-    \ YcmCompleter call s:CompleterCommand(<f-args>)
-  command! YcmForceCompileAndDiagnostics call s:ForceCompileAndDiagnostics()
-  command! YcmDiags call s:ShowDiagnostics()
+  return s:AllowedToCompleteInCurrentBuffer()
 endfunction
 
 
@@ -377,10 +400,8 @@ function! s:SetUpCpoptions()
   set cpoptions+=B
 
   " This prevents the display of "Pattern not found" & similar messages during
-  " completion. This is only available since Vim 7.4.314
-  if s:Pyeval( 'vimsupport.VimVersionAtLeast("7.4.314")' )
-    set shortmess+=c
-  endif
+  " completion.
+  set shortmess+=c
 endfunction
 
 
@@ -408,15 +429,8 @@ function! s:SetUpCompleteopt()
 endfunction
 
 
-" For various functions/use-cases, we want to keep track of whether the buffer
-" has changed since the last time they were invoked. We keep the state of
-" b:changedtick of the last time the specific function was called in
-" b:ycm_changedtick.
-function! s:SetUpYcmChangedTick()
-  let b:ycm_changedtick  =
-        \ get( b:, 'ycm_changedtick', {
-        \   'file_ready_to_parse' : -1,
-        \ } )
+function! s:SetCompleteFunc()
+  let &completefunc = 'youcompleteme#CompleteFunc'
 endfunction
 
 
@@ -430,24 +444,7 @@ function! s:OnCompleteDone()
 endfunction
 
 
-function! s:OnBufferReadPre(filename)
-  let threshold = g:ycm_disable_for_files_larger_than_kb * 1024
-
-  if threshold > 0 && getfsize( a:filename ) > threshold
-    echohl WarningMsg |
-          \ echomsg "YouCompleteMe is disabled in this buffer; " .
-          \ "the file exceeded the max size (see YCM options)." |
-          \ echohl None
-    let b:ycm_largefile = 1
-  endif
-endfunction
-
-function! s:OnBufferRead()
-  " We need to do this even when we are not allowed to complete in the current
-  " buffer because we might be allowed to complete in the future! The canonical
-  " example is creating a new buffer with :enew and then setting a filetype.
-  call s:SetUpYcmChangedTick()
-
+function! s:OnFileTypeSet()
   if !s:AllowedToCompleteInCurrentBuffer()
     return
   endif
@@ -455,12 +452,8 @@ function! s:OnBufferRead()
   call s:SetUpCompleteopt()
   call s:SetCompleteFunc()
 
-  if !s:defer_omnifunc
-    call s:SetOmnicompleteFunc()
-  endif
-
   exec s:python_command "ycm_state.OnBufferVisit()"
-  call s:OnFileReadyToParse()
+  call s:OnFileReadyToParse( 1 )
 endfunction
 
 
@@ -469,104 +462,114 @@ function! s:OnBufferEnter()
     return
   endif
 
-  exec s:python_command "ycm_state.OnBufferVisit()"
-  call s:OnFileReadyToParse()
-endfunction
-
-
-function! s:OnBufferUnload( deleted_buffer_file )
-  if !s:AllowedToCompleteInCurrentBuffer() || empty( a:deleted_buffer_file )
-    return
-  endif
-
-  exec s:python_command "ycm_state.OnBufferUnload("
-        \ "vim.eval( 'a:deleted_buffer_file' ) )"
-endfunction
-
-
-function! s:OnCursorHold()
-  if !s:AllowedToCompleteInCurrentBuffer()
-    return
-  endif
-
   call s:SetUpCompleteopt()
-  call s:OnFileReadyToParse()
+  call s:SetCompleteFunc()
+
+  exec s:python_command "ycm_state.OnBufferVisit()"
+  " Last parse may be outdated because of changes from other buffers. Force a
+  " new parse.
+  call s:OnFileReadyToParse( 1 )
 endfunction
 
 
-function! s:OnFileReadyToParse()
-  " We need to call this just in case there is no b:ycm_changetick; this can
-  " happen for special buffers.
-  call s:SetUpYcmChangedTick()
+function! s:OnBufferUnload()
+  " Expanding <abuf> returns the unloaded buffer number as a string but we want
+  " it as a true number for the getbufvar function.
+  if !s:AllowedToCompleteInBuffer( str2nr( expand( '<abuf>' ) ) )
+    return
+  endif
 
-  " Order is important here; we need to extract any information before
-  " reparsing the file again. If we sent the new parse request first, then
-  " the response would always be pending when we called
-  " HandleFileParseRequest.
-  exec s:python_command "ycm_state.HandleFileParseRequest()"
+  let deleted_buffer_file = expand( '<afile>:p' )
+  exec s:python_command "ycm_state.OnBufferUnload(" .
+        \ "vim.eval( 'deleted_buffer_file' ) )"
+endfunction
 
-  let buffer_changed = b:changedtick != b:ycm_changedtick.file_ready_to_parse
-  if buffer_changed
+
+function! s:PollServerReady( timer_id )
+  if !s:Pyeval( 'ycm_state.IsServerAlive()' )
+    exec s:python_command "ycm_state.NotifyUserIfServerCrashed()"
+    " Server crashed. Don't poll it again.
+    return
+  endif
+
+  if !s:Pyeval( 'ycm_state.CheckIfServerIsReady()' )
+    let s:pollers.server_ready.id = timer_start(
+          \ s:pollers.server_ready.wait_milliseconds,
+          \ function( 's:PollServerReady' ) )
+    return
+  endif
+
+  call s:OnFileTypeSet()
+endfunction
+
+
+function! s:OnFileReadyToParse( ... )
+  " Accepts an optional parameter that is either 0 or 1. If 1, send a
+  " FileReadyToParse event notification, whether the buffer has changed or not;
+  " effectively forcing a parse of the buffer. Default is 0.
+  let force_parsing = a:0 > 0 && a:1
+
+  " We only want to send a new FileReadyToParse event notification if the buffer
+  " has changed since the last time we sent one, or if forced.
+  if force_parsing || s:Pyeval( "ycm_state.NeedsReparse()" )
     exec s:python_command "ycm_state.OnFileReadyToParse()"
-  endif
-  let b:ycm_changedtick.file_ready_to_parse = b:changedtick
-endfunction
 
-
-function! s:SetCompleteFunc()
-  let &completefunc = 'youcompleteme#Complete'
-  let &l:completefunc = 'youcompleteme#Complete'
-endfunction
-
-
-function! s:SetOmnicompleteFunc()
-  if s:Pyeval( 'ycm_state.NativeFiletypeCompletionUsable()' )
-    let &omnifunc = 'youcompleteme#OmniComplete'
-    let &l:omnifunc = 'youcompleteme#OmniComplete'
-
-  " If we don't have native filetype support but the omnifunc is set to YCM's
-  " omnifunc because the previous file the user was editing DID have native
-  " support, we remove our omnifunc.
-  elseif &omnifunc == 'youcompleteme#OmniComplete'
-    let &omnifunc = ''
-    let &l:omnifunc = ''
+    call timer_stop( s:pollers.file_parse_response.id )
+    let s:pollers.file_parse_response.id = timer_start(
+          \ s:pollers.file_parse_response.wait_milliseconds,
+          \ function( 's:PollFileParseResponse' ) )
   endif
 endfunction
 
-function! s:OnCursorMovedInsertMode()
-  if !s:AllowedToCompleteInCurrentBuffer()
+
+function! s:PollFileParseResponse( ... )
+  if !s:Pyeval( "ycm_state.FileParseRequestReady()" )
+    let s:pollers.file_parse_response.id = timer_start(
+          \ s:pollers.file_parse_response.wait_milliseconds,
+          \ function( 's:PollFileParseResponse' ) )
     return
   endif
 
-  exec s:python_command "ycm_state.OnCursorMoved()"
-  call s:UpdateCursorMoved()
+  exec s:python_command "ycm_state.HandleFileParseRequest()"
+endfunction
 
-  " Basically, we need to only trigger the completion menu when the user has
-  " inserted or deleted a character, NOT just when the user moves in insert mode
-  " (with, say, the arrow keys). If we trigger the menu even on pure moves, then
-  " it's impossible to move in insert mode since the up/down arrows start moving
-  " the selected completion in the completion menu. Yeah, people shouldn't be
-  " moving in insert mode at all (that's what normal mode is for) but explain
-  " that to the users who complain...
-  if !s:BufferTextChangedSinceLastMoveInInsertMode()
-    return
-  endif
 
-  call s:IdentifierFinishedOperations()
-  if g:ycm_autoclose_preview_window_after_completion
-    call s:ClosePreviewWindowIfNeeded()
-  endif
+function! s:SendKeys( keys )
+  " By default keys are added to the end of the typeahead buffer. If there are
+  " already keys in the buffer, they will be processed first and may change the
+  " state that our keys combination was sent for (e.g. <C-X><C-U><C-P> in normal
+  " mode instead of insert mode or <C-e> outside of completion mode). We avoid
+  " that by inserting the keys at the start of the typeahead buffer with the 'i'
+  " option. Also, we don't want the keys to be remapped to something else so we
+  " add the 'n' option.
+  call feedkeys( a:keys, 'in' )
+endfunction
 
-  if g:ycm_auto_trigger || s:omnifunc_mode
-    call s:InvokeCompletion()
-  endif
 
-  " We have to make sure we correctly leave omnifunc mode even when the user
-  " inserts something like a "operator[]" candidate string which fails
-  " CurrentIdentifierFinished check.
-  if s:omnifunc_mode && !s:Pyeval( 'base.LastEnteredCharIsIdentifierChar()')
-    let s:omnifunc_mode = 0
+function! s:OnInsertChar()
+  call timer_stop( s:pollers.completion.id )
+  if pumvisible()
+    call s:SendKeys( "\<C-e>" )
   endif
+endfunction
+
+
+function! s:OnDeleteChar( key )
+  call timer_stop( s:pollers.completion.id )
+  if pumvisible()
+    return "\<C-y>" . a:key
+  endif
+  return a:key
+endfunction
+
+
+function! s:StopCompletion( key )
+  call timer_stop( s:pollers.completion.id )
+  if pumvisible()
+    let s:completion_stopped = 1
+    return "\<C-y>"
+  endif
+  return a:key
 endfunction
 
 
@@ -575,8 +578,53 @@ function! s:OnCursorMovedNormalMode()
     return
   endif
 
-  call s:OnFileReadyToParse()
   exec s:python_command "ycm_state.OnCursorMoved()"
+endfunction
+
+
+function! s:OnTextChangedNormalMode()
+  if !s:AllowedToCompleteInCurrentBuffer()
+    return
+  endif
+
+  call s:OnFileReadyToParse()
+endfunction
+
+
+function! s:OnTextChangedInsertMode()
+  if !s:AllowedToCompleteInCurrentBuffer()
+    return
+  endif
+
+  if s:completion_stopped
+    let s:completion_stopped = 0
+    let s:completion = s:default_completion
+    return
+  endif
+
+  call s:IdentifierFinishedOperations()
+
+  " We have to make sure we correctly leave semantic mode even when the user
+  " inserts something like a "operator[]" candidate string which fails
+  " CurrentIdentifierFinished check.
+  if s:force_semantic && !s:Pyeval( 'base.LastEnteredCharIsIdentifierChar()' )
+    let s:force_semantic = 0
+  endif
+
+  if &completefunc == "youcompleteme#CompleteFunc" &&
+        \ ( g:ycm_auto_trigger || s:force_semantic ) &&
+        \ !s:InsideCommentOrStringAndShouldStop() &&
+        \ !s:OnBlankLine()
+    " Immediately call previous completion to avoid flickers.
+    call s:Complete()
+    call s:InvokeCompletion()
+  endif
+
+  exec s:python_command "ycm_state.OnCursorMoved()"
+
+  if g:ycm_autoclose_preview_window_after_completion
+    call s:ClosePreviewWindowIfNeeded()
+  endif
 endfunction
 
 
@@ -585,51 +633,16 @@ function! s:OnInsertLeave()
     return
   endif
 
-  let s:omnifunc_mode = 0
+  call timer_stop( s:pollers.completion.id )
+  let s:force_semantic = 0
+  let s:completion = s:default_completion
+
   call s:OnFileReadyToParse()
   exec s:python_command "ycm_state.OnInsertLeave()"
   if g:ycm_autoclose_preview_window_after_completion ||
         \ g:ycm_autoclose_preview_window_after_insertion
     call s:ClosePreviewWindowIfNeeded()
   endif
-endfunction
-
-
-function! s:OnInsertEnter()
-  let s:previous_num_chars_on_current_line = strlen( getline('.') )
-
-  if !s:AllowedToCompleteInCurrentBuffer()
-    return
-  endif
-
-  let s:old_cursor_position = []
-endfunction
-
-
-function! s:UpdateCursorMoved()
-  let current_position = getpos('.')
-  let s:cursor_moved = current_position != s:old_cursor_position
-
-  let s:moved_vertically_in_insert_mode = s:old_cursor_position != [] &&
-        \ current_position[ 1 ] != s:old_cursor_position[ 1 ]
-
-  let s:old_cursor_position = current_position
-endfunction
-
-
-function! s:BufferTextChangedSinceLastMoveInInsertMode()
-  let num_chars_in_current_cursor_line = strlen( getline('.') )
-
-  if s:moved_vertically_in_insert_mode
-    let s:previous_num_chars_on_current_line = num_chars_in_current_cursor_line
-    return 0
-  endif
-
-  let changed_text_on_current_line = num_chars_in_current_cursor_line !=
-        \ s:previous_num_chars_on_current_line
-  let s:previous_num_chars_on_current_line = num_chars_in_current_cursor_line
-
-  return changed_text_on_current_line
 endfunction
 
 
@@ -654,7 +667,8 @@ function! s:IdentifierFinishedOperations()
     return
   endif
   exec s:python_command "ycm_state.OnCurrentIdentifierFinished()"
-  let s:omnifunc_mode = 0
+  let s:force_semantic = 0
+  let s:completion = s:default_completion
 endfunction
 
 
@@ -697,85 +711,68 @@ endfunction
 
 
 function! s:InvokeCompletion()
-  if &completefunc != "youcompleteme#Complete"
+  exec s:python_command "ycm_state.SendCompletionRequest(" .
+        \ "vimsupport.GetBoolValue( 's:force_semantic' ) )"
+
+  call s:PollCompletion()
+endfunction
+
+
+function! s:InvokeSemanticCompletion()
+  if &completefunc == "youcompleteme#CompleteFunc"
+    let s:force_semantic = 1
+    exec s:python_command "ycm_state.SendCompletionRequest( True )"
+
+    call s:PollCompletion()
+  endif
+
+  " Since this function is called in a mapping through the expression register
+  " <C-R>=, its return value is inserted (see :h c_CTRL-R_=). We don't want to
+  " insert anything so we return an empty string.
+  return ''
+endfunction
+
+
+function! s:PollCompletion( ... )
+  if !s:Pyeval( 'ycm_state.CompletionRequestReady()' )
+    let s:pollers.completion.id = timer_start(
+          \ s:pollers.completion.wait_milliseconds,
+          \ function( 's:PollCompletion' ) )
     return
   endif
 
-  if s:InsideCommentOrStringAndShouldStop() || s:OnBlankLine()
-    return
-  endif
+  let response = s:Pyeval( 'ycm_state.GetCompletionResponse()' )
+  let s:completion = {
+        \   'start_column': response.completion_start_column,
+        \   'candidates': response.completions
+        \ }
+  call s:Complete()
+endfunction
 
-  " This is tricky. First, having 'refresh' set to 'always' in the dictionary
-  " that our completion function returns makes sure that our completion function
-  " is called on every keystroke. Second, when the sequence of characters the
-  " user typed produces no results in our search an infinite loop can occur. The
-  " problem is that our feedkeys call triggers the OnCursorMovedI event which we
-  " are tied to. We prevent this infinite loop from starting by making sure that
-  " the user has moved the cursor since the last time we provided completion
-  " results.
-  if !s:cursor_moved
-    return
-  endif
 
+function! s:Complete()
   " <c-x><c-u> invokes the user's completion function (which we have set to
-  " youcompleteme#Complete), and <c-p> tells Vim to select the previous
+  " youcompleteme#CompleteFunc), and <c-p> tells Vim to select the previous
   " completion candidate. This is necessary because by default, Vim selects the
   " first candidate when completion is invoked, and selecting a candidate
   " automatically replaces the current text with it. Calling <c-p> forces Vim to
   " deselect the first candidate and in turn preserve the user's current text
   " until he explicitly chooses to replace it with a completion.
-  call feedkeys( "\<C-X>\<C-U>\<C-P>", 'n' )
+  call s:SendKeys( "\<C-X>\<C-U>\<C-P>" )
 endfunction
 
 
-function! s:GetCompletions()
-  return s:Pyeval( 'ycm_state.GetCompletions()' )
-endfunction
-
-
-" This is our main entry point. This is what vim calls to get completions.
-function! youcompleteme#Complete( findstart, base )
-  " After the user types one character after the call to the omnifunc, the
-  " completefunc will be called because of our mapping that calls the
-  " completefunc on every keystroke. Therefore we need to delegate the call we
-  " 'stole' back to the omnifunc
-  if s:omnifunc_mode
-    return youcompleteme#OmniComplete( a:findstart, a:base )
-  endif
-
+function! youcompleteme#CompleteFunc( findstart, base )
   if a:findstart
-    " InvokeCompletion has this check but we also need it here because of random
-    " Vim bugs and unfortunate interactions with the autocommands of other
-    " plugins
-    if !s:cursor_moved
-      " for vim, -2 means not found but don't trigger an error message
-      " see :h complete-functions
+    if s:completion.start_column > col( '.' ) ||
+          \ empty( s:completion.candidates )
+      " For vim, -2 means not found but don't trigger an error message.
+      " See :h complete-functions.
       return -2
     endif
-
-    if !s:Pyeval( 'ycm_state.IsServerAlive()' )
-      return -2
-    endif
-    exec s:python_command "ycm_state.CreateCompletionRequest()"
-    return s:Pyeval( 'base.CompletionStartColumn()' )
-  else
-    return s:GetCompletions()
+    return s:completion.start_column - 1
   endif
-endfunction
-
-
-function! youcompleteme#OmniComplete( findstart, base )
-  if a:findstart
-    if !s:Pyeval( 'ycm_state.IsServerAlive()' )
-      return -2
-    endif
-    let s:omnifunc_mode = 1
-    exec s:python_command "ycm_state.CreateCompletionRequest("
-          \ "force_semantic = True )"
-    return s:Pyeval( 'base.CompletionStartColumn()' )
-  else
-    return s:GetCompletions()
-  endif
+  return s:completion.candidates
 endfunction
 
 
@@ -784,13 +781,25 @@ function! youcompleteme#ServerPid()
 endfunction
 
 
-function! s:RestartServer()
-  exec s:python_command "ycm_state.RestartServer()"
+function! s:SetUpCommands()
+  command! YcmRestartServer call s:RestartServer()
+  command! YcmDebugInfo call s:DebugInfo()
+  command! -nargs=* -complete=custom,youcompleteme#LogsComplete
+        \ YcmToggleLogs call s:ToggleLogs(<f-args>)
+  command! -nargs=* -complete=custom,youcompleteme#SubCommandsComplete
+        \ YcmCompleter call s:CompleterCommand(<f-args>)
+  command! YcmDiags call s:ShowDiagnostics()
+  command! YcmShowDetailedDiagnostic call s:ShowDetailedDiagnostic()
+  command! YcmForceCompileAndDiagnostics call s:ForceCompileAndDiagnostics()
 endfunction
 
 
-function! s:ShowDetailedDiagnostic()
-  exec s:python_command "ycm_state.ShowDetailedDiagnostic()"
+function! s:RestartServer()
+  exec s:python_command "ycm_state.RestartServer()"
+  call timer_stop( s:pollers.server_ready.id )
+  let s:pollers.server_ready.id = timer_start(
+        \ s:pollers.server_ready.wait_milliseconds,
+        \ function( 's:PollServerReady' ) )
 endfunction
 
 
@@ -804,11 +813,12 @@ endfunction
 
 
 function! s:ToggleLogs(...)
-  let stderr = a:0 == 0 || a:1 !=? 'stdout'
-  let stdout = a:0 == 0 || a:1 !=? 'stderr'
-  exec s:python_command "ycm_state.ToggleLogs("
-        \ "stdout = vimsupport.GetBoolValue( 'l:stdout' ),"
-        \ "stderr = vimsupport.GetBoolValue( 'l:stderr' ) )"
+  exec s:python_command "ycm_state.ToggleLogs( *vim.eval( 'a:000' ) )"
+endfunction
+
+
+function! youcompleteme#LogsComplete( arglead, cmdline, cursorpos )
+  return join( s:Pyeval( 'list( ycm_state.GetLogfiles() )' ), "\n" )
 endfunction
 
 
@@ -830,67 +840,36 @@ function! s:CompleterCommand(...)
     let arguments = arguments[1:]
   endif
 
-  exec s:python_command "ycm_state.SendCommandRequest("
-        \ "vim.eval( 'l:arguments' ), vim.eval( 'l:completer' ) ) "
-endfunction
-
-
-function! youcompleteme#OpenGoToList()
-  exec s:python_command "vimsupport.PostVimMessage("
-    \ "'WARNING: youcompleteme#OpenGoToList function is deprecated."
-    \ "Do NOT use it.')"
-  exec s:python_command "vimsupport.OpenQuickFixList( True, True )"
-endfunction
-
-
-function! youcompleteme#LogsComplete( arglead, cmdline, cursorpos )
-  return "stdout\nstderr"
+  exec s:python_command "ycm_state.SendCommandRequest(" .
+        \ "vim.eval( 'l:arguments' ), vim.eval( 'l:completer' ) )"
 endfunction
 
 
 function! youcompleteme#SubCommandsComplete( arglead, cmdline, cursorpos )
-  return join( s:Pyeval( 'ycm_state.GetDefinedSubcommands()' ),
-    \ "\n")
+  return join( s:Pyeval( 'ycm_state.GetDefinedSubcommands()' ), "\n" )
 endfunction
 
 
-function! s:ForceCompile()
-  if !s:Pyeval( 'ycm_state.NativeFiletypeCompletionUsable()' )
-    echom "Native filetype completion not supported for current file, "
-          \ . "cannot force recompilation."
-    return 0
-  endif
-
-  echom "Forcing compilation, this will block Vim until done."
-  exec s:python_command "ycm_state.OnFileReadyToParse()"
-  exec s:python_command "ycm_state.HandleFileParseRequest( True )"
-
-  return 1
-endfunction
-
-
-function! s:ForceCompileAndDiagnostics()
-  let compilation_succeeded = s:ForceCompile()
-  if !compilation_succeeded
-    return
-  endif
-  echom "Diagnostics refreshed."
+function! youcompleteme#OpenGoToList()
+  exec s:python_command "vimsupport.PostVimMessage(" .
+        \ "'WARNING: youcompleteme#OpenGoToList function is deprecated. " .
+        \ "Do NOT use it.' )"
+  exec s:python_command "vimsupport.OpenQuickFixList( True, True )"
 endfunction
 
 
 function! s:ShowDiagnostics()
-  let compilation_succeeded = s:ForceCompile()
-  if !compilation_succeeded
-    return
-  endif
+  exec s:python_command "ycm_state.ShowDiagnostics()"
+endfunction
 
-  if s:Pyeval( 'ycm_state.PopulateLocationListWithLatestDiagnostics()' )
-    if g:ycm_open_loclist_on_ycm_diags
-      lopen
-    endif
-  else
-    echom "No warnings or errors detected"
-  endif
+
+function! s:ShowDetailedDiagnostic()
+  exec s:python_command "ycm_state.ShowDetailedDiagnostic()"
+endfunction
+
+
+function! s:ForceCompileAndDiagnostics()
+  exec s:python_command "ycm_state.ForceCompileAndDiagnostics()"
 endfunction
 
 

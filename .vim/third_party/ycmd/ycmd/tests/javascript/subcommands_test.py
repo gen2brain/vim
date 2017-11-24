@@ -20,8 +20,7 @@ from __future__ import print_function
 from __future__ import absolute_import
 from __future__ import unicode_literals
 from __future__ import division
-from future import standard_library
-standard_library.install_aliases()
+# Not installing aliases from python-future; it's unreliable and slow.
 from builtins import *  # noqa
 
 from hamcrest import assert_that, contains, contains_inanyorder, has_entries
@@ -53,8 +52,9 @@ def Subcommands_DefinedSubcommands_test( app ):
                       subcommands_data ).json )
 
 
-def RunTest( app, test ):
-  contents = ReadFile( test[ 'request' ][ 'filepath' ] )
+def RunTest( app, test, contents = None ):
+  if not contents:
+    contents = ReadFile( test[ 'request' ][ 'filepath' ] )
 
   def CombineRequest( request, data ):
     kw = request
@@ -155,6 +155,31 @@ def Subcommands_GoTo_test( app ):
       } )
     }
   } )
+
+
+@IsolatedYcmd
+def Subcommands_GoTo_RelativePath_test( app ):
+  WaitUntilCompleterServerReady( app, 'javascript' )
+  RunTest(
+    app,
+    {
+      'description': 'GoTo works when the buffer differs from the file on disk',
+      'request': {
+        'command': 'GoTo',
+        'line_num': 43,
+        'column_num': 25,
+        'filepath': PathToTestFile( 'simple_test.js' ),
+      },
+      'expect': {
+        'response': requests.codes.ok,
+        'data': has_entries( {
+          'filepath': PathToTestFile( 'simple_test.js' ),
+          'line_num': 31,
+          'column_num': 5,
+        } )
+      }
+    },
+    contents = ReadFile( PathToTestFile( 'simple_test.modified.js' ) ) )
 
 
 @SharedYcmd

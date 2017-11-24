@@ -1,4 +1,5 @@
 # Copyright (C) 2013 Google Inc.
+#               2017 ycmd contributors
 #
 # This file is part of ycmd.
 #
@@ -19,13 +20,14 @@ from __future__ import absolute_import
 from __future__ import unicode_literals
 from __future__ import print_function
 from __future__ import division
-from future import standard_library
-standard_library.install_aliases()
+# Not installing aliases from python-future; it's unreliable and slow.
 from builtins import *  # noqa
 
 import bottle
 import json
 import logging
+import platform
+import sys
 import time
 import traceback
 from bottle import request
@@ -33,7 +35,8 @@ from threading import Thread
 
 import ycm_core
 from ycmd import extra_conf_store, hmac_plugin, server_state, user_options_store
-from ycmd.responses import BuildExceptionResponse, BuildCompletionResponse
+from ycmd.responses import ( BuildExceptionResponse, BuildCompletionResponse,
+                             UnknownExtraConf )
 from ycmd.request_wrap import RequestWrap
 from ycmd.bottle_utils import SetResponseHeader
 from ycmd.completers.completer_utils import FilterAndSortCandidatesWrap
@@ -118,7 +121,7 @@ def GetCompletions():
 
   return _JsonResponse(
       BuildCompletionResponse( completions if completions else [],
-                               request_data.CompletionStartColumn(),
+                               request_data[ 'start_column' ],
                                errors = errors ) )
 
 
@@ -132,15 +135,17 @@ def FilterAndSortCandidates():
   return _JsonResponse( FilterAndSortCandidatesWrap(
     request_data[ 'candidates'],
     request_data[ 'sort_property' ],
-    request_data[ 'query' ] ) )
+    request_data[ 'query' ],
+    _server_state.user_options[ 'max_num_candidates' ] ) )
 
 
 @app.get( '/healthy' )
 def GetHealthy():
   _logger.info( 'Received health request' )
-  if request.query.include_subservers:
-    cs_completer = _server_state.GetFiletypeCompleter( ['cs'] )
-    return _JsonResponse( cs_completer.ServerIsHealthy() )
+  if request.query.subserver:
+    filetype = request.query.subserver
+    completer = _server_state.GetFiletypeCompleter( [ filetype ] )
+    return _JsonResponse( completer.ServerIsHealthy() )
   return _JsonResponse( True )
 
 
@@ -149,15 +154,9 @@ def GetReady():
   _logger.info( 'Received ready request' )
   if request.query.subserver:
     filetype = request.query.subserver
-    return _JsonResponse( _IsSubserverReady( filetype ) )
-  if request.query.include_subservers:
-    return _JsonResponse( _IsSubserverReady( 'cs' ) )
+    completer = _server_state.GetFiletypeCompleter( [ filetype ] )
+    return _JsonResponse( completer.ServerIsReady() )
   return _JsonResponse( True )
-
-
-def _IsSubserverReady( filetype ):
-  completer = _server_state.GetFiletypeCompleter( [filetype] )
-  return completer.ServerIsReady()
 
 
 @app.post( '/semantic_completion_available' )
@@ -205,24 +204,42 @@ def IgnoreExtraConfFile():
 @app.post( '/debug_info' )
 def DebugInfo():
   _logger.info( 'Received debug info request' )
-
-  output = []
-  has_clang_support = ycm_core.HasClangSupport()
-  output.append( 'Server has Clang support compiled in: {0}'.format(
-    has_clang_support ) )
-
-  if has_clang_support:
-    output.append( 'Clang version: ' + ycm_core.ClangVersion() )
-
   request_data = RequestWrap( request.json )
-  try:
-    output.append(
-        _GetCompleterForRequestData( request_data ).DebugInfo( request_data ) )
-  except Exception:
-    _logger.debug( 'Exception in debug info request: '
-                   + traceback.format_exc() )
 
-  return _JsonResponse( '\n'.join( output ) )
+  has_clang_support = ycm_core.HasClangSupport()
+  clang_version = ycm_core.ClangVersion() if has_clang_support else None
+
+  filepath = request_data[ 'filepath' ]
+  try:
+    extra_conf_path = extra_conf_store.ModuleFileForSourceFile( filepath )
+    is_loaded = bool( extra_conf_path )
+  except UnknownExtraConf as error:
+    extra_conf_path = error.extra_conf_file
+    is_loaded = False
+
+  response = {
+    'python': {
+      'executable': sys.executable,
+      'version': platform.python_version()
+    },
+    'clang': {
+      'has_support': has_clang_support,
+      'version': clang_version
+    },
+    'extra_conf': {
+      'path': extra_conf_path,
+      'is_loaded': is_loaded
+    },
+    'completer': None
+  }
+
+  try:
+    response[ 'completer' ] = _GetCompleterForRequestData(
+        request_data ).DebugInfo( request_data )
+  except Exception as error:
+    _logger.exception( error )
+
+  return _JsonResponse( response )
 
 
 @app.post( '/shutdown' )
@@ -239,6 +256,7 @@ def ErrorHandler( httperror ):
                                                 httperror.traceback ) )
   hmac_plugin.SetHmacHeader( body, _hmac_secret )
   return body
+
 
 # For every error Bottle encounters it will use this as the default handler
 app.default_error_handler = ErrorHandler
@@ -302,14 +320,6 @@ def UpdateUserOptions( options ):
   options.pop( 'hmac_secret', None )
   user_options_store.SetAll( options )
   _server_state = server_state.ServerState( options )
-
-
-def SetServerStateToDefaults():
-  global _server_state, _logger
-  _logger = logging.getLogger( __name__ )
-  user_options_store.LoadDefaults()
-  _server_state = server_state.ServerState( user_options_store.GetAll() )
-  extra_conf_store.Reset()
 
 
 def KeepSubserversAlive( check_interval_seconds ):

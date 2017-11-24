@@ -19,55 +19,54 @@ from __future__ import unicode_literals
 from __future__ import print_function
 from __future__ import division
 from __future__ import absolute_import
-from future import standard_library
-standard_library.install_aliases()
+# Not installing aliases from python-future; it's unreliable and slow.
 from builtins import *  # noqa
-
-from requests.exceptions import ReadTimeout
 
 from ycmd.utils import ToUnicode
 from ycm.client.base_request import ( BaseRequest, JsonFromFuture,
                                       HandleServerException,
                                       MakeServerException )
-from ycmd.responses import ServerError
-
-TIMEOUT_SECONDS = 0.5
 
 
 class CompletionRequest( BaseRequest ):
   def __init__( self, request_data ):
     super( CompletionRequest, self ).__init__()
     self.request_data = request_data
+    self._response_future = None
+    self._response = { 'completions': [], 'completion_start_column': -1 }
 
 
   def Start( self ):
     self._response_future = self.PostDataToHandlerAsync( self.request_data,
-                                                         'completions',
-                                                         TIMEOUT_SECONDS )
+                                                         'completions' )
 
 
   def Done( self ):
-    return self._response_future.done()
+    return bool( self._response_future ) and self._response_future.done()
 
 
   def RawResponse( self ):
     if not self._response_future:
-      return []
-    try:
-      response = JsonFromFuture( self._response_future )
+      return self._response
 
-      errors = response[ 'errors' ] if 'errors' in response else []
+    with HandleServerException( truncate = True ):
+      self._response = JsonFromFuture( self._response_future )
+
+      # Vim may not be able to convert the 'errors' entry to its internal format
+      # so we remove it from the response.
+      errors = self._response.pop( 'errors', [] )
       for e in errors:
-        HandleServerException( MakeServerException( e ) )
+        with HandleServerException( truncate = True ):
+          raise MakeServerException( e )
 
-      return JsonFromFuture( self._response_future )[ 'completions' ]
-    except ( ServerError, ReadTimeout ) as e:
-      HandleServerException( e, truncate = True )
-    return []
+    return self._response
 
 
   def Response( self ):
-    return _ConvertCompletionDatasToVimDatas( self.RawResponse() )
+    response = self.RawResponse()
+    response[ 'completions' ] = _ConvertCompletionDatasToVimDatas(
+        response[ 'completions' ] )
+    return response
 
 
 def ConvertCompletionDataToVimData( completion_data ):

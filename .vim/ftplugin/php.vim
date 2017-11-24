@@ -22,18 +22,8 @@ let php_alt_construct_parents = 1
 
 let tlist_php_settings = 'php;c:class;d:constant;f:function'
 
-" Toggle taglist
-nnoremap <silent> <F6> :TlistToggle<CR>
-
 " Tasks
 nmap <silent> <F8> :vimgrep /TODO\\|FIXME/gj **/*.php \| copen<CR>
-
-" Map <F5> to re-build tags file
-nmap <silent> <F5>
-                \ :!exuberant-ctags -f $HOME/.vim/tags
-                \ --langmap="php:+.inc"
-                \ -h ".php.inc" -R --totals=yes
-                \ --tag-relative=yes --PHP-kinds=+cf-v %:p:h<CR>
 
 " Map ; to run PHP parser check
 noremap ; :!php -l %<CR>

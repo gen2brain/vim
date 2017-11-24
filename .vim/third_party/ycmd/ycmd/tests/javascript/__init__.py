@@ -19,17 +19,19 @@ from __future__ import unicode_literals
 from __future__ import print_function
 from __future__ import division
 from __future__ import absolute_import
-from future import standard_library
-standard_library.install_aliases()
+# Not installing aliases from python-future; it's unreliable and slow.
 from builtins import *  # noqa
 
 import functools
 import os
 
 from ycmd import handlers
-from ycmd.tests.test_utils import ( ClearCompletionsCache, SetUpApp,
+from ycmd.tests.test_utils import ( ClearCompletionsCache,
+                                    CurrentWorkingDirectory,
+                                    SetUpApp,
                                     StopCompleterServer,
                                     WaitUntilCompleterServerReady )
+from ycmd.utils import GetCurrentDirectory
 
 shared_app = None
 shared_current_dir = None
@@ -48,7 +50,7 @@ def setUpPackage():
   global shared_app, shared_current_dir
 
   shared_app = SetUpApp()
-  shared_current_dir = os.getcwd()
+  shared_current_dir = GetCurrentDirectory()
   os.chdir( PathToTestFile() )
   WaitUntilCompleterServerReady( shared_app, 'javascript' )
 
@@ -84,16 +86,29 @@ def IsolatedYcmd( test ):
   started, no .ycm_extra_conf.py loaded, etc).
 
   Do NOT attach it to test generators but directly to the yielded tests."""
-  @functools.wraps( test )
-  def Wrapper( *args, **kwargs ):
-    old_server_state = handlers._server_state
-    old_current_dir = os.getcwd()
-    app = SetUpApp()
-    os.chdir( PathToTestFile() )
-    try:
-      test( app, *args, **kwargs )
-    finally:
-      StopCompleterServer( app, 'javascript' )
-      os.chdir( old_current_dir )
-      handlers._server_state = old_server_state
-  return Wrapper
+  return IsolatedYcmdInDirectory( PathToTestFile() )
+
+
+def IsolatedYcmdInDirectory( directory ):
+  """Defines a decorator to be attached to tests of this package. This decorator
+  passes a unique ycmd application as a parameter running in the directory
+  supplied. It should be used on tests that change the server state in a
+  irreversible way (ex: a semantic subserver is stopped or restarted) or expect
+  a clean state (ex: no semantic subserver started, no .ycm_extra_conf.py
+  loaded, etc).
+
+  Do NOT attach it to test generators but directly to the yielded tests."""
+  def Decorator( test ):
+    @functools.wraps( test )
+    def Wrapper( *args, **kwargs ):
+      old_server_state = handlers._server_state
+      app = SetUpApp()
+      try:
+        with CurrentWorkingDirectory( directory ):
+          test( app, *args, **kwargs )
+      finally:
+        StopCompleterServer( app, 'javascript' )
+        handlers._server_state = old_server_state
+    return Wrapper
+
+  return Decorator
