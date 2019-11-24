@@ -4,17 +4,21 @@ filetype indent on
 
 syntax on
 
+if has("termguicolors")
+    set termguicolors
+endif
+
 " Color scheme
 if has("gui")
-    colors one
     set background=dark
+    colors one
     set guifont=Consolas\ 13
     set guioptions-=T
     set guioptions-=t
     behave mswin
 elseif has("win32")
-    colors one
     set background=dark
+    colors one
     set guifont=Consolas:h12:cANSI
     let &guioptions = substitute(&guioptions, "t", "", "g")
     let &guioptions = substitute(&guioptions, "T", "", "g")
@@ -24,14 +28,10 @@ else
         colors pablo
         "set t_Co=16
     else
-        colors one
         set background=dark
+        colors one
         "set t_Co=256
     endif
-endif
-
-if has("termguicolors")
-    set termguicolors
 endif
 
 " Set root path
@@ -193,5 +193,6 @@ let $GOPATH = $HOME.'/golang'
 let g:ycm_server_python_interpreter='/usr/bin/python'
 let g:go_def_mapping_enabled=0
 let g:NERDTreeMapActivateNode='<cr>'
+let g:airline_theme='one'
 
 " }}}
