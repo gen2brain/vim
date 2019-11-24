@@ -17,6 +17,3 @@ set wildignore+=*.pyc
 
 " Tasks
 nmap <silent> <F8> :vimgrep /TODO\\|FIXME/gj **/*.py \| copen<CR>
-
-" Change SQL case
-vmap <C-x><C-s> :call ChangeSqlCase()<cr>

@@ -30,6 +30,3 @@ noremap ; :!php -l %<CR>
 
 " Map <CTRL>-P to run actual file with PHP CLI
 noremap <C-P> :w!<CR>:!php %<CR>
-
-" Change SQL case
-vmap <C-x><C-s> :call ChangeSqlCase()<cr>
