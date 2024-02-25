@@ -3,7 +3,7 @@ set enc=utf-8
 set autoindent
 set smartindent
 
-autocmd FileType php :set omnifunc=phpcomplete#CompletePHP
+"autocmd FileType php :set omnifunc=phpcomplete#CompletePHP
 
 " Use php syntax check when doing :make
 set makeprg=php\ -l\ %
@@ -27,6 +27,3 @@ nmap <silent> <F8> :vimgrep /TODO\\|FIXME/gj **/*.php \| copen<CR>
 
 " Map ; to run PHP parser check
 noremap ; :!php -l %<CR>
-
-" Map <CTRL>-P to run actual file with PHP CLI
-noremap <C-P> :w!<CR>:!php %<CR>
