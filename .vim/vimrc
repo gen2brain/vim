@@ -1,6 +1,6 @@
-filetype on
-filetype plugin on
-filetype indent on
+set nocompatible
+
+filetype plugin indent on
 
 syntax on
 
@@ -9,34 +9,32 @@ if has("termguicolors")
 endif
 
 " Color scheme
-if has("gui")
-    set background=dark
-    colors one
-    set guifont=JetBrains\ Mono\ Regular\ 12
-    set guioptions-=T
-    set guioptions-=t
-    behave mswin
-elseif has("win32")
-    set background=dark
-    colors one
-    set guifont=Consolas:h12:cANSI
-    let &guioptions = substitute(&guioptions, "t", "", "g")
-    let &guioptions = substitute(&guioptions, "T", "", "g")
-    behave mswin
+if !has("gui") && $TERM ==# "linux"
+    colors pablo
 else
-    if $TERM=="linux"
-        colors pablo
-    else
-        set background=dark
-        colors one
-    endif
+    set background=dark
+    colors one
 endif
 
-" Set root path
+if has("gui")
+    if has("win32")
+        set guifont=Consolas:h12:cANSI
+    else
+        set guifont=JetBrains\ Mono\ Regular\ 12
+    endif
+    set guioptions-=T
+    set guioptions-=t
+endif
+
+if has("gui") || has("win32")
+    behave mswin
+endif
+
+" Use ~/.vim on Windows too, instead of ~/vimfiles
 if has("win32")
-    set rtp+=$VIMRUNTIME,../$VIMRUNTIME/vimfiles
-else
-    set rtp+=~/.vim
+    set runtimepath^=~/.vim
+    set runtimepath+=~/.vim/after
+    set packpath^=~/.vim
 endif
 
 " Disable Generation of Backup Files
@@ -46,6 +44,7 @@ set noswapfile
 " Completion options
 set completeopt=menu,longest
 set wildmode=longest,list
+set wildignore+=*.pyc
 
 " character encoding
 set enc=utf-8
@@ -98,8 +97,6 @@ set scrolloff=3
 " '20  - remember marks for 20 previous files
 " \"50 - save 50 lines for each register
 " :50  - remember 50 items in command-line history
-" %    - remember the buffer list (if vim started without a file arg)
-" n    - set name of viminfo file
 set viminfo='20,\"50,:50
 
 " Remember up to 100 'colon' commmands and search patterns
@@ -114,8 +111,8 @@ vnoremap <BS> d
 vnoremap <C-C> "+y
 
 " CTRL-V is Paste
-map <C-V>		"+gP
-cmap <C-V>		<C-R>+
+noremap <C-V>		"+gP
+cnoremap <C-V>		<C-R>+
 
 exe 'inoremap <script> <C-V>' paste#paste_cmd['i']
 exe 'vnoremap <script> <C-V>' paste#paste_cmd['v']
@@ -149,16 +146,16 @@ snoremap <C-A> <C-C>gggH<C-O>G
 xnoremap <C-A> <C-C>ggVG
 
 " Quick tab navigation
-map <C-t>     :tabnew<CR>
-map <C-left>  :tabp<CR>
-map <C-right> :tabn<CR>
+nnoremap <C-t>     :tabnew<CR>
+nnoremap <C-left>  :tabp<CR>
+nnoremap <C-right> :tabn<CR>
 
 " visual shifting (does not exit Visual mode)
 vnoremap < <gv
 vnoremap > >gv
 
 " NerdTree
-nmap <silent> <F9> :NERDTreeToggle<CR>
+nnoremap <silent> <F9> :NERDTreeToggle<CR>
 
 let NERDTreeDirArrows=1
 let NERDTreeWinSize = 35
@@ -169,13 +166,41 @@ let NERDTreeMapActivateNode='<cr>'
 let NERDTreeChDirMode = 2
 
 " Open NERDTree on startup, when no file has been specified
-autocmd VimEnter * if !argc() | NERDTree | endif
+"autocmd VimEnter * if !argc() | NERDTree | endif
 
-nmap <F11> :set keymap=serbian-latin<CR>
-nmap <F10> :set keymap=<CR>
+" Open NERDTree when Vim starts with a directory argument
+function! s:FindReadme(dir) abort
+    for l:ext in ['.md', '.markdown', '.rst', '.txt', '']
+        for l:match in glob(a:dir . '[Rr][Ee][Aa][Dd][Mm][Ee]' . l:ext, 0, 1)
+            if filereadable(l:match)
+                return l:match
+            endif
+        endfor
+    endfor
+    return ''
+endfunction
+
+function! s:OpenProject(dir) abort
+    let l:dir = fnamemodify(a:dir, ':p')
+    execute 'NERDTree' fnameescape(l:dir)
+    execute 'cd' fnameescape(l:dir)
+    wincmd p
+    let l:readme = s:FindReadme(l:dir)
+    if empty(l:readme)
+        enew
+    else
+        execute 'edit' fnameescape(l:readme)
+    endif
+endfunction
+
+autocmd StdinReadPre * let s:std_in=1
+autocmd VimEnter * ++nested if argc() == 1 && isdirectory(argv()[0]) && !exists('s:std_in') | call s:OpenProject(argv()[0]) | endif
+
+nnoremap <F11> :set keymap=serbian-latin<CR>
+nnoremap <F10> :set keymap=<CR>
 
 " delete trailing whitespace (spaces, tabs) from end of each line
-nmap <silent> <F12> :%s/[ \t]*$//g<CR>
+nnoremap <silent> <F12> :%s/[ \t]*$//g<CR>
 
 " Tab completion
 inoremap <expr> <Tab>   pumvisible() ? "\<C-n>" : "\<Tab>"
